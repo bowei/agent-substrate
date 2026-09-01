@@ -39,10 +39,10 @@ type demoCounterSubstrate struct {
 	goldenTimeout time.Duration
 }
 
-func (d *demoCounterSubstrate) Name() string          { return d.name }
-func (d *demoCounterSubstrate) Description() string   { return d.description }
-func (d *demoCounterSubstrate) Flags(*pflag.FlagSet)  {}
-func (d *demoCounterSubstrate) TemplatePath() string  { return d.poolManifest }
+func (d *demoCounterSubstrate) Name() string         { return d.name }
+func (d *demoCounterSubstrate) Description() string  { return d.description }
+func (d *demoCounterSubstrate) Flags(*pflag.FlagSet) {}
+func (d *demoCounterSubstrate) TemplatePath() string { return d.poolManifest }
 
 func (d *demoCounterSubstrate) Deploy(ctx context.Context, e *steps.Env) error {
 	log.Stepf("%s_deploy (%s/%s)", d.name, d.atespace, d.templateName)
