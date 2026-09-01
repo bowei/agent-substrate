@@ -48,7 +48,6 @@ var clusterTrustBundleGVK = schema.GroupVersionKind{
 // conditions match kubectl's own status viewers.
 func (c *Client) RolloutStatus(ctx context.Context, kind, namespace, name string, timeout time.Duration) error {
 	var lastMsg string
-	var notFoundCount int
 	err := poll(ctx, timeout, func(ctx context.Context) (bool, error) {
 		var done bool
 		var msg string
@@ -65,12 +64,9 @@ func (c *Client) RolloutStatus(ctx context.Context, kind, namespace, name string
 		}
 		if err != nil {
 			// The workload may not exist yet when its manifest was applied
-			// moments ago; keep waiting briefly rather than failing immediately.
+			// moments ago (e.g. WorkerPool controller creating its Deployment);
+			// keep waiting rather than failing immediately.
 			if apierrors.IsNotFound(err) {
-				notFoundCount++
-				if notFoundCount > 5 {
-					return false, fmt.Errorf("%s/%s not found in namespace %s: %w", kind, name, namespace, err)
-				}
 				lastMsg = fmt.Sprintf("%s/%s not created yet", kind, name)
 				return false, nil
 			}
