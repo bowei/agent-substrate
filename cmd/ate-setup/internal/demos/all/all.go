@@ -26,6 +26,7 @@ import (
 	_ "github.com/agent-substrate/substrate/cmd/ate-setup/internal/demos/counter"
 	_ "github.com/agent-substrate/substrate/cmd/ate-setup/internal/demos/countersubstrate"
 	_ "github.com/agent-substrate/substrate/cmd/ate-setup/internal/demos/egress"
+	_ "github.com/agent-substrate/substrate/cmd/ate-setup/internal/demos/jupyter"
 	_ "github.com/agent-substrate/substrate/cmd/ate-setup/internal/demos/multitemplate"
 	_ "github.com/agent-substrate/substrate/cmd/ate-setup/internal/demos/parking"
 	_ "github.com/agent-substrate/substrate/cmd/ate-setup/internal/demos/sandbox"
