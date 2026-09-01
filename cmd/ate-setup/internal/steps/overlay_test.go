@@ -131,3 +131,24 @@ func TestPatchAtenetEgressManifest(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderAtenetEgressManifest_AgentGatewayMITM(t *testing.T) {
+	root, err := config.RepoRoot()
+	if err != nil {
+		t.Fatalf("resolving repo root: %v", err)
+	}
+	env := &Env{Cfg: &config.Config{
+		Root:                   root,
+		Router:                 config.RouterAgentgateway,
+		ExperimentalUseSDSMint: true,
+		KODockerRepo:           "example.com/repo",
+	}}
+
+	manifest, err := env.renderAtenetEgressManifest(t.Context())
+	if err != nil {
+		t.Fatalf("renderAtenetEgressManifest failed: %v", err)
+	}
+	if len(manifest) == 0 {
+		t.Fatal("rendered manifest is empty")
+	}
+}

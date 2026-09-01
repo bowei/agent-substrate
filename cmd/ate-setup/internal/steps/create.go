@@ -23,7 +23,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/agent-substrate/substrate/cmd/ate-setup/internal/config"
 	"github.com/agent-substrate/substrate/cmd/ate-setup/internal/log"
 	"github.com/agent-substrate/substrate/internal/localca"
 	"github.com/agent-substrate/substrate/internal/localjwtauthority"
@@ -83,7 +82,7 @@ func (e *Env) CreateEgressMITMCAPoolSecret(ctx context.Context) error {
 
 // EnsureEgressMITMCAPoolSecret creates the egress MITM CA pool secret if sdsmint is enabled.
 func (e *Env) EnsureEgressMITMCAPoolSecret(ctx context.Context) error {
-	if e.Cfg.Router == config.RouterAgentgateway || !e.Cfg.ExperimentalUseSDSMint {
+	if !e.Cfg.ExperimentalUseSDSMint {
 		return nil
 	}
 	return e.ensureSecret(ctx, NamespaceAteSystem, SecretEgressMITMCAPool, e.CreateEgressMITMCAPoolSecret)
