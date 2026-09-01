@@ -1,0 +1,354 @@
+# Implementation Plan: Migration of Install Shell Scripts to Go (`ate-setup`) and Bridge Stubs
+
+## 1. Overview & Objectives
+
+Agent Substrate has introduced `cmd/ate-setup` as a pure Go replacement for `hack/install-ate.sh`, `hack/install-ate-kind.sh`, `hack/install-demo-*.sh`, and related cluster management shell scripts.
+
+The goal of this migration plan is to:
+1. **Document the current shell script CLI specification** in `hack-shell-cmdline.md` (all flags, environment variables, default values, side effects, and usages across all `hack/` scripts) to serve as the golden test specification.
+2. **Identify and port all missing features and drift** between recent shell script additions (since commit `bac7736b`) and `cmd/ate-setup`.
+3. **Enhance `cmd/ate-setup`** with complete support for all demo variants, runtime environments (gVisor & micro-VM), substrate-resource models, and networking configurations (Envoy & AgentGateway with SDSMint / MITM).
+4. **Implement backward-compatible bridge stubs** (`hack/install-ate.sh`, `hack/install-ate-kind.sh`, etc.) that intercept existing CLI invocations, parse flags and environment variables, support multi-action sequences, and delegate cleanly to `ate-setup`.
+5. **Retire or simplify legacy shell scripts** while ensuring 100% compatibility with CI workflows (`.github/workflows/`), developer workflows (`hack/run-e2e.sh`, `hack/run-microvm-demo.sh`), and existing documentation.
+
+---
+
+## 2. Shell Command Line Specification Document (`hack-shell-cmdline.md`)
+
+Before modifying or replacing shell scripts, create a dedicated reference document **`hack-shell-cmdline.md`** (placed in `cmd/ate-setup/hack-shell-cmdline.md` or repo root) capturing the exact baseline behavior of all existing scripts:
+
+1. **Global & Modifier Flags**:
+   - Every global flag (`--kind`, `--atenet-router`, `--rollout-timeout`, `--podcert-workers-per-signer`, `--experimental-use-sdsmint`, `--experimental-additional-egress-extproc-service`, `--context`, `--kubeconfig`, `--no-dev-env`, `--otlp-endpoint`).
+   - Corresponding environment variables (`ATE_INSTALL_KIND`, `ATE_ATENET_ROUTER`, `ATE_INSTALL_ROLLOUT_TIMEOUT`, `ATE_INSTALL_PODCERT_WORKERS_PER_SIGNER`, `ATE_EXPERIMENTAL_USE_SDSMINT`, `ATE_ADDITIONAL_EGRESS_EXTPROC_SERVICE`, `KUBECTL_CONTEXT`, `KUBECONFIG`, `NO_DEV_ENV`, `ATE_OTLP_ENDPOINT`).
+   - Default values, parsing rules (e.g. `--flag=val` vs `--flag val`), and pre-scan evaluation order.
+2. **Action Flags & Subcommands**:
+   - System actions: `--deploy-ate-system`, `--delete-ate-system`, `--delete-all`, `--deploy-atelet`, `--deploy-ate-apiserver`, `--deploy-atenet`, `--delete-atenet`, `--setup-csi`.
+   - Secret & CA creation actions: `--create-jwt-authority-pool-secret`, `--create-actor-id-ca-pool-secret`, `--create-actor-id-ca-certs-secret`, `--create-egress-mitm-ca-pool-secret`, `--create-podcertificate-controller-cas`, `--create-api-server-env-vars`, `--create-api-authentication-config`.
+   - Benchmark actions & options: `--deploy-benchmarks`, `--delete-benchmarks`, `--benchmark-worker-count`, `--benchmark-sandbox-class`, `--benchmark-actor-memory`.
+   - Demo actions (all 9 demos and their variants):
+     - `demo-counter` (`--deploy-demo-counter`, `--deploy-demo-counter-with-external-volume`, `--delete-demo-counter`)
+     - `demo-counter-substrate` (`--deploy-demo-counter-substrate`, `--delete-demo-counter-substrate`, `--deploy-demo-counter-substrate-microvm`, `--delete-demo-counter-substrate-microvm`)
+     - `demo-egress` (`--deploy-demo-egress`, `--delete-demo-egress`, `--deploy-demo-egress-microvm`, `--delete-demo-egress-microvm`, `--deploy-demo-egress-mitm`, `--delete-demo-egress-mitm`, `--deploy-demo-egress-microvm-mitm`, `--delete-demo-egress-microvm-mitm`)
+     - `demo-jupyter` (`--deploy-demo-jupyter`, `--delete-demo-jupyter`)
+     - `demo-sandbox` (`--deploy-demo-sandbox`, `--delete-demo-sandbox`)
+     - `demo-claude-code-multiplex` (`--deploy-demo-claude-code-multiplex`, `--delete-demo-claude-code-multiplex`)
+     - `demo-multi-template` (`--deploy-demo-multi-template`, `--delete-demo-multi-template`)
+     - `demo-parking` (`--deploy-demo-parking`, `--delete-demo-parking`)
+     - `demo-autoscaled-workerpool` (`--deploy-demo-autoscaled-workerpool`, `--delete-demo-autoscaled-workerpool`)
+3. **Behavioral Semantics & Edge Cases**:
+   - Multi-action invocation semantics (e.g. `--deploy-ate-system --deploy-demo-counter`).
+   - Sourcing of `.ate-dev-env.sh` vs `NO_DEV_ENV=1`.
+   - Auto-retrieval of GKE credentials via `gcloud` when `PROJECT_ID` is set without `KUBECTL_CONTEXT`.
+   - Error exit behavior (`set -e`, nonzero exit codes).
+4. **Usage for Testing**:
+   - Serves as the test fixture matrix for automated bridge stub testing and regression validation.
+
+---
+
+## 3. Inventory of Missing Changes & Codebase Drift
+
+Analysis of commits between `bac7736b` ("Go-based hack scripts (#1190)") and `HEAD` identified the following missing features and drift in `cmd/ate-setup`:
+
+### 3.1. Substrate-Resource Counter Demos (`demo-counter-substrate` & `demo-counter-substrate-microvm`)
+* **Commits**: `08cd74e2` ("Add kubectl ate CLI changes as well as counter demo in the new substrate resource (#1281)") and `77e69a1b` ("Switching e2e tests to use the new ActorTemplate substrate proto (#1290)").
+* **Shell Implementation**: `hack/install-demo-counter-substrate.sh` and additions to `hack/install-ate.sh` (`delete_demo_actors_substrate`, `wait_actortemplate_ready`).
+* **Current State in Go**: Missing from `cmd/ate-setup/internal/demos` and `cmd/ate-setup/internal/demos/all/all.go`.
+* **Requirements**:
+  - Deploy worker pool manifest via `ko apply` (`demos/counter/counter-substrate.yaml.tmpl` or `demos/counter/counter-substrate-microvm.yaml.tmpl`).
+  - Wait for WorkerPool deployment rollout.
+  - Create `atespace` via ate client (`EnsureAtespace`).
+  - Resolve ActorTemplate manifest via `ko resolve` (`demos/counter/counter-substrate-template.yaml.tmpl` or `demos/counter/counter-substrate-microvm-template.yaml.tmpl`) and create via ate API.
+  - Wait for golden snapshot creation (`status.goldenSnapshotStatus.goldenSnapshot.name` populated; fail fast on `errorMessage`). Timeout: 300s for gVisor, 600s for micro-VM.
+  - Teardown: delete actors using substrate template reference (`atespace`, `template_name`), delete `ActorTemplate`, delete `atespace`, delete worker pool.
+
+### 3.2. Egress Demo Variants (`demo-egress-microvm`, `demo-egress-mitm`, `demo-egress-microvm-mitm`)
+* **Shell Implementation**: `hack/install-demo-egress.sh` registers 4 demos: `demo-egress`, `demo-egress-microvm`, `demo-egress-mitm`, `demo-egress-microvm-mitm`.
+* **Current State in Go**: `cmd/ate-setup/internal/demos/egress/egress.go` only registers `demo-egress`.
+* **Requirements**:
+  - Add registrations for `demo-egress-microvm`, `demo-egress-mitm`, and `demo-egress-microvm-mitm`.
+  - Micro-VM variants require 600s timeout for golden snapshot generation.
+  - MITM variants require SDSMint / `egress-mitm-ca-pool` validation.
+
+### 3.3. Jupyter Demo (`demo-jupyter`)
+* **Shell Implementation**: `hack/install-demo-jupyter.sh` registers `--deploy-demo-jupyter` and `--delete-demo-jupyter` (`demos/jupyter/jupyter.yaml.tmpl`).
+* **Current State in Go**: Missing package under `cmd/ate-setup/internal/demos`.
+* **Requirements**: Implement demo package for Jupyter, register in `all.go`.
+
+### 3.4. AgentGateway MITM Egress Manifest & CA Pool Secret
+* **Commit**: `f5517c0e` ("Flesh out agentgateway implementation (#1265)").
+* **Shell Implementation**:
+  - `render_atenet_egress_manifest` switches to `manifests/ate-install/agentgateway-egress-mitm` when `ATE_EXPERIMENTAL_USE_SDSMINT=true`.
+  - `ensure_egress_mitm_ca_pool_secret` creates `egress-mitm-ca-pool` for AgentGateway when `ATE_EXPERIMENTAL_USE_SDSMINT=true`.
+* **Current State in Go**:
+  - `renderAtenetEgressManifest` in `cmd/ate-setup/internal/steps/overlay.go` unconditionally selects `installDir+"/agentgateway-egress"`.
+  - `EnsureEgressMITMCAPoolSecret` in `cmd/ate-setup/internal/steps/create.go` explicitly excludes `config.RouterAgentgateway`.
+* **Requirements**: Fix manifest selection and secret creation to support AgentGateway in MITM mode.
+
+### 3.5. WorkerPool Deployment Creation Race Handling
+* **Commit**: `51f4114d` ("hack: wait for a pool's Deployment to exist before its rollout [CI flake fix] (#1320)").
+* **Shell Implementation**: Added `wait_for_pool_rollout` which executes `kubectl wait --for=create deployment/${pool}` before `kubectl rollout status`.
+* **Current State in Go**: `RolloutStatus` in `cmd/ate-setup/internal/kube/wait.go` allows at most 5 consecutive `NotFound` errors before aborting.
+* **Requirements**: Tolerate `NotFound` during the creation phase up to the specified wait timeout instead of failing after 5 attempts.
+
+### 3.6. Telemetry & Benchmark Configuration Flags
+* **Shell Implementation**: `hack/install-ate.sh` supports `--otlp-endpoint URL` and `--benchmark-actor-memory SIZE`.
+* **Current State in Go**: Loaded only via environment variables (`ATE_OTLP_ENDPOINT`, `BENCHMARK_ACTOR_MEMORY`) in `config.go`; CLI flags are missing in `cmd/ate-setup/internal/cmd/root.go` and `cmd/ate-setup/internal/cmd/benchmarks.go`.
+* **Requirements**: Expose `--otlp-endpoint` and `--actor-memory` CLI flags on `ate-setup`.
+
+---
+
+## 4. Detailed Go Porting Plan (`cmd/ate-setup`)
+
+### Step 4.1: Fix AgentGateway MITM & CA Pool Secrets
+1. In `cmd/ate-setup/internal/steps/overlay.go`:
+   - Update `renderAtenetEgressManifest`:
+     ```go
+     if e.Cfg.Router == config.RouterAgentgateway {
+         if e.Cfg.AdditionalEgressExtprocService != "" {
+             return nil, fmt.Errorf("--experimental-additional-egress-extproc-service requires --atenet-router=envoy")
+         }
+         if e.Cfg.ExperimentalUseSDSMint {
+             return e.KustomizeResolve(ctx, installDir+"/agentgateway-egress-mitm")
+         }
+         return e.KustomizeResolve(ctx, installDir+"/agentgateway-egress")
+     }
+     ```
+2. In `cmd/ate-setup/internal/steps/create.go`:
+   - Update `EnsureEgressMITMCAPoolSecret`:
+     ```go
+     func (e *Env) EnsureEgressMITMCAPoolSecret(ctx context.Context) error {
+         if !e.Cfg.ExperimentalUseSDSMint {
+             return nil
+         }
+         return e.ensureSecret(ctx, NamespaceAteSystem, SecretEgressMITMCAPool, e.CreateEgressMITMCAPoolSecret)
+     }
+     ```
+3. Update tests in `overlay_test.go` and `create_test.go`.
+
+### Step 4.2: Robust Deployment Creation Wait in `kube.Client`
+1. In `cmd/ate-setup/internal/kube/wait.go`:
+   - In `RolloutStatus`, remove the `notFoundCount > 5` cap. Continue polling until the context deadline/timeout expires, logging status messages periodically.
+
+### Step 4.3: Implement Substrate-Resource Counter Demos
+1. Create `cmd/ate-setup/internal/demos/countersubstrate/countersubstrate.go`:
+   - Implement `demo-counter-substrate` (gVisor variant) and `demo-counter-substrate-microvm` (micro-VM variant).
+   - Implement deploy workflow:
+     1. `e.EnsureCRDs(ctx)`
+     2. Render and apply worker pool template (`counter-substrate.yaml.tmpl` or `counter-substrate-microvm.yaml.tmpl`).
+     3. Wait for worker pool rollout (`e.Kube.RolloutStatus`).
+     4. Create atespace if missing using ate client.
+     5. Resolve ActorTemplate image tags using `e.KoResolveBytes` on `counter-substrate-template.yaml.tmpl` / `counter-substrate-microvm-template.yaml.tmpl`.
+     6. Create ActorTemplate via ate client. If already exists, log and keep.
+     7. Wait for golden snapshot creation with appropriate timeout (300s for gVisor, 600s for micro-VM).
+   - Implement delete workflow:
+     1. Delete demo actors using substrate template match (`delete_demo_actors_substrate` logic using ate client).
+     2. Delete `ActorTemplate` via ate client.
+     3. Delete `atespace` via ate client.
+     4. Delete worker pool manifest.
+2. Register in `cmd/ate-setup/internal/demos/all/all.go`.
+3. Add unit and rendering tests.
+
+### Step 4.4: Implement Missing Egress Demo Variants
+1. Update `cmd/ate-setup/internal/demos/egress/egress.go`:
+   - Register `demo-egress-microvm`:
+     - Template: `demos/egress/egress-microvm.yaml.tmpl`
+     - Deployment: `ate-demo-egress-microvm/egress-microvm`
+     - ActorTemplate: `ate-demo-egress-microvm/egress-microvm`
+     - Timeout: 600s
+   - Register `demo-egress-mitm`:
+     - Template: `demos/egress/egress-mitm.yaml.tmpl`
+     - Deployment: `ate-demo-egress-mitm/egress-mitm`
+     - ActorTemplate: `ate-demo-egress-mitm/egress-mitm`
+     - Timeout: 300s
+   - Register `demo-egress-microvm-mitm`:
+     - Template: `demos/egress/egress-microvm-mitm.yaml.tmpl`
+     - Deployment: `ate-demo-egress-microvm-mitm/egress-microvm-mitm`
+     - ActorTemplate: `ate-demo-egress-microvm-mitm/egress-microvm-mitm`
+     - Timeout: 600s
+2. Add rendering tests in `egress_test.go`.
+
+### Step 4.5: Implement Jupyter Demo
+1. Create `cmd/ate-setup/internal/demos/jupyter/jupyter.go`:
+   - Register `demo-jupyter` using `demos.Simple`:
+     - Template: `demos/jupyter/jupyter.yaml.tmpl`
+     - Deployment: `ate-demo-jupyter/jupyter`
+     - ActorTemplate: `ate-demo-jupyter/jupyter`
+2. Register in `cmd/ate-setup/internal/demos/all/all.go`.
+
+### Step 4.6: Expose Telemetry & Benchmark Memory CLI Flags
+1. In `cmd/ate-setup/internal/cmd/root.go`:
+   - Add `--otlp-endpoint` persistent flag binding to `opts.OtlpEndpoint`.
+2. In `cmd/ate-setup/internal/cmd/benchmarks.go`:
+   - Add `--actor-memory` flag binding to `deployBenchmarkOpts.ActorMemory`.
+3. Update `config.go` to pass through these options.
+
+---
+
+## 5. Bridge Stubs Architecture & Implementation Plan
+
+### 5.1. Requirements for Bridge Stubs
+The bridge stubs must replace the shell scripts in `hack/` while providing 100% backward compatibility with `hack-shell-cmdline.md`:
+1. **Prescan and map all modifier flags and environment variables** to `ate-setup` global flags.
+2. **Support multi-action invocations**: `hack/install-ate.sh` allowed multiple action flags in a single command (e.g. `--deploy-ate-system --deploy-demo-counter`), whereas `ate-setup` executes a single action per run. The bridge stub must parse and execute each action sequentially.
+3. **Preserve exit codes and failure propagation**: If any action fails, execution immediately halts with the matching non-zero exit code (`set -e`).
+4. **Environment inheritance & GKE credentials**: Honor `.ate-dev-env.sh`, `NO_DEV_ENV`, and auto-fetch GKE credentials when `PROJECT_ID` is set and `KUBECTL_CONTEXT` is not.
+5. **Support `--help` / `-h`** displaying the complete legacy flag set and usage.
+
+### 5.2. Flag Mapping Matrix
+
+| Shell Script Flag / Variable | Bridge Mapping to `ate-setup` | Type |
+|---|---|---|
+| `--kind` / `ATE_INSTALL_KIND=true` | Global flag: `--kind` | Global Modifier |
+| `--atenet-router=X` / `ATE_ATENET_ROUTER` | Global flag: `--atenet-router=X` | Global Modifier |
+| `--rollout-timeout=X` / `ATE_INSTALL_ROLLOUT_TIMEOUT` | Global flag: `--rollout-timeout=X` | Global Modifier |
+| `--podcert-workers-per-signer=N` | Global flag: `--podcert-workers-per-signer=N` | Global Modifier |
+| `--experimental-use-sdsmint` | Global flag: `--experimental-use-sdsmint` | Global Modifier |
+| `--experimental-additional-egress-extproc-service=SVC` | Global flag: `--experimental-additional-egress-extproc-service=SVC` | Global Modifier |
+| `--otlp-endpoint=URL` / `ATE_OTLP_ENDPOINT` | Global flag: `--otlp-endpoint=URL` | Global Modifier |
+| `KUBECTL_CONTEXT=X` / `--context=X` | Global flag: `--context=X` | Global Modifier |
+| `KUBECONFIG=X` / `--kubeconfig=X` | Global flag: `--kubeconfig=X` | Global Modifier |
+| `NO_DEV_ENV=1` | Global flag: `--no-dev-env` | Global Modifier |
+| `--setup-csi` (with `--deploy-ate-system`) | Subcommand flag: `deploy ate-system --setup-csi` | Action Modifier |
+| `--benchmark-worker-count=N` | Subcommand flag: `deploy benchmarks --worker-count=N` | Action Modifier |
+| `--benchmark-sandbox-class=X` | Subcommand flag: `deploy/delete benchmarks --sandbox-class=X` | Action Modifier |
+| `--benchmark-actor-memory=X` | Subcommand flag: `deploy benchmarks --actor-memory=X` | Action Modifier |
+| `--deploy-ate-system` | Subcommand: `deploy ate-system` | Action |
+| `--delete-ate-system` | Subcommand: `delete ate-system` | Action |
+| `--delete-all` | Subcommand: `delete all` | Action |
+| `--deploy-atelet` | Subcommand: `deploy atelet` | Action |
+| `--deploy-ate-apiserver` | Subcommand: `deploy apiserver` | Action |
+| `--deploy-atenet` | Subcommand: `deploy atenet` | Action |
+| `--delete-atenet` | Subcommand: `delete atenet` | Action |
+| `--setup-csi` (standalone) | Subcommand: `setup csi` | Action |
+| `--deploy-benchmarks` | Subcommand: `deploy benchmarks` | Action |
+| `--delete-benchmarks` | Subcommand: `delete benchmarks` | Action |
+| `--create-jwt-authority-pool-secret` | Subcommand: `create jwt-authority-pool` | Action |
+| `--create-actor-id-ca-pool-secret` | Subcommand: `create actor-id-ca-pool` | Action |
+| `--create-actor-id-ca-certs-secret` | Subcommand: `create actor-id-ca-certs` | Action |
+| `--create-egress-mitm-ca-pool-secret` | Subcommand: `create egress-mitm-ca-pool` | Action |
+| `--create-podcertificate-controller-cas` | Subcommand: `create podcertificate-controller-cas` | Action |
+| `--create-api-server-env-vars` | Subcommand: `create api-server-env-vars` | Action |
+| `--create-api-authentication-config` | Subcommand: `create api-authentication-config` | Action |
+| `--deploy-demo-counter` | Subcommand: `deploy demo counter` | Action |
+| `--deploy-demo-counter-with-external-volume` | Subcommand: `deploy demo counter --with-external-volume` | Action |
+| `--delete-demo-counter` | Subcommand: `delete demo counter` | Action |
+| `--deploy-demo-counter-substrate` | Subcommand: `deploy demo counter-substrate` | Action |
+| `--delete-demo-counter-substrate` | Subcommand: `delete demo counter-substrate` | Action |
+| `--deploy-demo-counter-substrate-microvm` | Subcommand: `deploy demo counter-substrate-microvm` | Action |
+| `--delete-demo-counter-substrate-microvm` | Subcommand: `delete demo counter-substrate-microvm` | Action |
+| `--deploy-demo-egress` | Subcommand: `deploy demo egress` | Action |
+| `--delete-demo-egress` | Subcommand: `delete demo egress` | Action |
+| `--deploy-demo-egress-microvm` | Subcommand: `deploy demo egress-microvm` | Action |
+| `--delete-demo-egress-microvm` | Subcommand: `delete demo egress-microvm` | Action |
+| `--deploy-demo-egress-mitm` | Subcommand: `deploy demo egress-mitm` | Action |
+| `--delete-demo-egress-mitm` | Subcommand: `delete demo egress-mitm` | Action |
+| `--deploy-demo-egress-microvm-mitm` | Subcommand: `deploy demo egress-microvm-mitm` | Action |
+| `--delete-demo-egress-microvm-mitm` | Subcommand: `delete demo egress-microvm-mitm` | Action |
+| `--deploy-demo-jupyter` | Subcommand: `deploy demo jupyter` | Action |
+| `--delete-demo-jupyter` | Subcommand: `delete demo jupyter` | Action |
+| `--deploy-demo-sandbox` | Subcommand: `deploy demo sandbox` | Action |
+| `--delete-demo-sandbox` | Subcommand: `delete demo sandbox` | Action |
+| `--deploy-demo-claude-code-multiplex` | Subcommand: `deploy demo claude-code-multiplex` | Action |
+| `--delete-demo-claude-code-multiplex` | Subcommand: `delete demo claude-code-multiplex` | Action |
+| `--deploy-demo-multi-template` | Subcommand: `deploy demo multi-template` | Action |
+| `--delete-demo-multi-template` | Subcommand: `delete demo multi-template` | Action |
+| `--deploy-demo-parking` | Subcommand: `deploy demo parking` | Action |
+| `--delete-demo-parking` | Subcommand: `delete demo parking` | Action |
+| `--deploy-demo-autoscaled-workerpool` | Subcommand: `deploy demo autoscaled-workerpool` | Action |
+| `--delete-demo-autoscaled-workerpool` | Subcommand: `delete demo autoscaled-workerpool` | Action |
+
+### 5.3. Structure of `hack/install-ate.sh` Bridge
+```bash
+#!/usr/bin/env bash
+set -o errexit -o nounset -o pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "${ROOT}"
+
+# Locate or build ate-setup binary
+ATESETUP="go run ./cmd/ate-setup"
+if [[ -x "bin/ate-setup" ]]; then
+  ATESETUP="bin/ate-setup"
+fi
+
+# 1. Handle --help / -h
+# 2. Parse global modifier flags and build GLOBAL_FLAGS array
+# 3. Parse action flags into ACTIONS array
+# 4. Loop over ACTIONS, executing:
+#    $ATESETUP "${GLOBAL_FLAGS[@]}" "${ACTION_COMMAND[@]}"
+```
+
+### 5.4. Structure of `hack/install-ate-kind.sh` Bridge
+```bash
+#!/usr/bin/env bash
+set -o errexit -o nounset -o pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "${ROOT}"
+
+goarch=$(go env GOARCH)
+export NO_DEV_ENV="true"
+export KO_DOCKER_REPO="${KO_DOCKER_REPO:-localhost:5001}"
+export KO_DEFAULTPLATFORMS="linux/${goarch}"
+export ATE_INSTALL_KIND="true"
+export BUCKET_NAME="ate-snapshots"
+KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kind}"
+export KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${KIND_CLUSTER_NAME}}"
+unset GCE_REGION CLUSTER_LOCATION NETWORK SUBNETWORK MEMORYSTORE_INSTANCE PROJECT_ID
+
+exec hack/install-ate.sh "$@"
+```
+
+---
+
+## 6. Migration & Clean-up of Legacy Shell Scripts
+
+Once the bridge stubs and Go implementations are verified:
+1. **Remove redundant demo scripts**: `hack/install-demo-*.sh` are no longer sourced or needed.
+2. **CSI helper scripts**: `hack/setup-csi-hostpath-kind.sh` and `hack/setup-csi-nfs-kind.sh` can delegate directly to `ate-setup setup csi` or be maintained as thin wrappers.
+3. **Documentation updates**:
+   - Update `cmd/ate-setup/commands.md` and `cmd/ate-setup/differences.md` to reflect full feature parity.
+   - Add references in `README.md` and `docs/` pointing to `ate-setup`.
+
+---
+
+## 7. Testing, Verification & Validation Matrix
+
+| Test Category | Target | Validation Method |
+|---|---|---|
+| **Shell Command Line Spec** | Baseline verification | `hack-shell-cmdline.md` reference checklist |
+| **Go Unit Tests** | `cmd/ate-setup/...` | `go test -v ./cmd/ate-setup/...` |
+| **Demo Registration Test** | `cmd/ate-setup/internal/demos/all` | `TestEveryDemoPackageIsLinked` |
+| **Manifest Rendering Tests** | `cmd/ate-setup/internal/demos/...` | Verify rendered manifests match expectations |
+| **Overlay Selection Tests** | `cmd/ate-setup/internal/steps` | Test all combinations of (GKE/Kind) × (Envoy/AgentGateway) × (Passthrough/SDSMint) |
+| **Bridge Stub CLI Compatibility** | `hack/install-ate.sh` | Run bridge with dry-run/mock flags testing every flag translation and multi-action sequence against `hack-shell-cmdline.md` |
+| **Linter & Code Format** | Full Repository | `make verify` and `make fmt` |
+| **E2E Smoke Testing** | Kind & GKE environments | `hack/run-e2e-kind.sh` / `hack/run-e2e.sh` |
+
+---
+
+## 8. Step-by-Step Execution Sequence
+
+1. **Step 1: Document Shell Interface Baseline (`hack-shell-cmdline.md`)**
+   - [ ] Audit all flags, env vars, defaults, side effects, and usages across `hack/install-ate.sh`, `hack/install-ate-kind.sh`, and `hack/install-demo-*.sh`.
+   - [ ] Write out `cmd/ate-setup/hack-shell-cmdline.md` to serve as the ground-truth specification and test fixture reference.
+
+2. **Step 2: Port Missing Features to Go**
+   - [ ] Update `cmd/ate-setup/internal/steps/overlay.go` and `create.go` for AgentGateway MITM egress and CA pool secret creation.
+   - [ ] Improve `cmd/ate-setup/internal/kube/wait.go` `RolloutStatus` to robustly wait for dynamically created deployments.
+   - [ ] Implement `demo-counter-substrate` & `demo-counter-substrate-microvm` in `cmd/ate-setup/internal/demos/countersubstrate`.
+   - [ ] Implement `demo-egress-microvm`, `demo-egress-mitm`, and `demo-egress-microvm-mitm` in `cmd/ate-setup/internal/demos/egress`.
+   - [ ] Implement `demo-jupyter` in `cmd/ate-setup/internal/demos/jupyter`.
+   - [ ] Expose `--otlp-endpoint` and `--actor-memory` CLI flags in `cmd/ate-setup/internal/cmd`.
+   - [ ] Register all new demos in `cmd/ate-setup/internal/demos/all/all.go`.
+   - [ ] Run `go test ./cmd/ate-setup/...` and ensure all tests pass.
+
+3. **Step 3: Implement and Test Bridge Stubs**
+   - [ ] Write `hack/install-ate.sh` bridge stub supporting flag translation, env variables, multi-action dispatch, and error propagation.
+   - [ ] Write `hack/install-ate-kind.sh` bridge stub.
+   - [ ] Verify bridge stub compatibility with unit/mock tests against `hack-shell-cmdline.md`.
+
+4. **Step 4: Clean up & Update Documentation**
+   - [ ] Update `cmd/ate-setup/commands.md` and `cmd/ate-setup/differences.md`.
+   - [ ] Remove obsolete `hack/install-demo-*.sh` scripts.
+   - [ ] Run `make verify` to ensure clean build, formatting, and linting.
