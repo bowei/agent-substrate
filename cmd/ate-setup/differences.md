@@ -1,13 +1,13 @@
 # ate-setup vs. the install shell scripts
 
-`ate-setup` is a Go port of `hack/install-ate.sh`, the seven
-`hack/install-demo-*.sh` scripts it sources, and `hack/setup-csi-*-kind.sh`.
+`ate-setup` is a Go port of `hack/install-ate.sh`, the
+`hack/install-demo-*.sh` scripts it sourced, and `hack/setup-csi-*-kind.sh`.
 
-The shell scripts are still present and still work; this is an additive
-alternative to them, not yet a replacement. Retiring them behind compatibility
-shims is left to a follow-up, so for now the two installers coexist and either
-can be used against the same cluster. See [`commands.md`](commands.md) for the
-flag-by-flag mapping between them.
+`hack/install-ate.sh` and `hack/install-ate-kind.sh` have been converted to
+backward-compatible bridge stubs delegating directly to `ate-setup`.
+The obsolete `hack/install-demo-*.sh` scripts have been removed, with all demos
+now registered directly in `internal/demos`.
+See [`commands.md`](commands.md) for the flag-by-flag mapping between them.
 
 This document covers what changed *behind* that mapping. For anything not listed
 here, the port is intended to be behavior-preserving.

@@ -2,7 +2,8 @@
 
 Every `ate-setup` command alongside the equivalent `hack/install-ate.sh` flag.
 
-Both installers work today; `ate-setup` does not yet replace the shell scripts.
+`hack/install-ate.sh` and `hack/install-ate-kind.sh` are backward-compatible
+bridge stubs that delegate directly to `ate-setup`.
 Use this table to translate an existing invocation.
 
 ```
@@ -27,6 +28,7 @@ a pre-scan pass, so they may appear anywhere on its command line.
 | `--podcert-workers-per-signer N` | `--podcert-workers-per-signer N` | Concurrent workers per podcertificate-controller signer |
 | `--experimental-use-sdsmint` | `--experimental-use-sdsmint` | Mint TLS certificates on-demand via SDS in atenet egress gateway |
 | `--experimental-additional-egress-extproc-service NS/SVC:PORT` | `--experimental-additional-egress-extproc-service NS/SVC:PORT` | External processor authorization filter |
+| `--otlp-endpoint URL` | `--otlp-endpoint URL`, or `ATE_OTLP_ENDPOINT` | Send all control plane and workload telemetry to URL |
 | `--context NAME` | `KUBECTL_CONTEXT=NAME` | Kubeconfig context; still defaults to `KUBECTL_CONTEXT` |
 | `--kubeconfig PATH` | `KUBECONFIG=PATH` | Explicit kubeconfig path |
 | `--no-dev-env` | `NO_DEV_ENV=1` | Skip `.ate-dev-env.sh` at the repository root |
@@ -91,8 +93,9 @@ passing both does the work once.
 | `delete benchmarks` | `--delete-benchmarks` |
 | `--worker-count N` | `--benchmark-worker-count N` (default `1`) |
 | `--sandbox-class gvisor\|microvm` | `--benchmark-sandbox-class CLASS` (default `gvisor`) |
+| `--actor-memory SIZE` | `--benchmark-actor-memory SIZE` (default `256Mi`) |
 
-The two flags are per-command in `ate-setup` and global in
+The flags are per-command in `ate-setup` and global in
 `hack/install-ate.sh`, which forwards them to whichever benchmark action runs.
 See
 [`benchmarking/README.md`](../../benchmarking/README.md).
@@ -110,7 +113,13 @@ See
 |---|---|---|
 | `deploy demo counter` | `--deploy-demo-counter` | A counter actor exercising snapshot, resume, and atenet ingress |
 | `deploy demo counter --with-external-volume` | `--deploy-demo-counter-with-external-volume` | The same, plus an external volume and a pre-seeded file to validate (run `setup csi` first) |
+| `deploy demo counter-substrate` | `--deploy-demo-counter-substrate` | Counter demo targeting native Substrate ActorTemplate and Atespace APIs |
+| `deploy demo counter-substrate-microvm` | `--deploy-demo-counter-substrate-microvm` | Substrate counter demo on micro-VM sandbox workers |
 | `deploy demo egress` | `--deploy-demo-egress` | Egress policy enforcement through atenet |
+| `deploy demo egress-microvm` | `--deploy-demo-egress-microvm` | Egress policy enforcement on micro-VM workers |
+| `deploy demo egress-mitm` | `--deploy-demo-egress-mitm` | MITM egress policy enforcement (requires `--experimental-use-sdsmint`) |
+| `deploy demo egress-microvm-mitm` | `--deploy-demo-egress-microvm-mitm` | MITM egress policy enforcement on micro-VM workers |
+| `deploy demo jupyter` | `--deploy-demo-jupyter` | Jupyter notebook server demo workload |
 | `deploy demo sandbox` | `--deploy-demo-sandbox` | An on-demand sandbox actor driven by the sandbox client |
 | `deploy demo multi-template` | `--deploy-demo-multi-template` | Two ActorTemplates sharing one WorkerPool |
 | `deploy demo parking` | `--deploy-demo-parking` | Actor parking and unparking on a small WorkerPool |
@@ -128,3 +137,4 @@ and the per-demo flags.
 Each demo previously had its own `hack/install-demo-*.sh`, sourced by the
 installer, which registered the flags above. Those scripts are gone; the demos
 now live in [`internal/demos`](internal/demos).
+

@@ -330,25 +330,25 @@ Once the bridge stubs and Go implementations are verified:
 ## 8. Step-by-Step Execution Sequence
 
 1. **Step 1: Document Shell Interface Baseline (`hack-shell-cmdline.md`)**
-   - [ ] Audit all flags, env vars, defaults, side effects, and usages across `hack/install-ate.sh`, `hack/install-ate-kind.sh`, and `hack/install-demo-*.sh`.
-   - [ ] Write out `cmd/ate-setup/hack-shell-cmdline.md` to serve as the ground-truth specification and test fixture reference.
+   - [x] Audit all flags, env vars, defaults, side effects, and usages across `hack/install-ate.sh`, `hack/install-ate-kind.sh`, and `hack/install-demo-*.sh`.
+   - [x] Write out `cmd/ate-setup/hack-shell-cmdline.md` to serve as the ground-truth specification and test fixture reference.
 
 2. **Step 2: Port Missing Features to Go**
-   - [ ] Update `cmd/ate-setup/internal/steps/overlay.go` and `create.go` for AgentGateway MITM egress and CA pool secret creation.
-   - [ ] Improve `cmd/ate-setup/internal/kube/wait.go` `RolloutStatus` to robustly wait for dynamically created deployments.
-   - [ ] Implement `demo-counter-substrate` & `demo-counter-substrate-microvm` in `cmd/ate-setup/internal/demos/countersubstrate`.
-   - [ ] Implement `demo-egress-microvm`, `demo-egress-mitm`, and `demo-egress-microvm-mitm` in `cmd/ate-setup/internal/demos/egress`.
-   - [ ] Implement `demo-jupyter` in `cmd/ate-setup/internal/demos/jupyter`.
-   - [ ] Expose `--otlp-endpoint` and `--actor-memory` CLI flags in `cmd/ate-setup/internal/cmd`.
-   - [ ] Register all new demos in `cmd/ate-setup/internal/demos/all/all.go`.
-   - [ ] Run `go test ./cmd/ate-setup/...` and ensure all tests pass.
+   - [x] Update `cmd/ate-setup/internal/steps/overlay.go` and `create.go` for AgentGateway MITM egress and CA pool secret creation.
+   - [x] Improve `cmd/ate-setup/internal/kube/wait.go` `RolloutStatus` to robustly wait for dynamically created deployments.
+   - [x] Implement `demo-counter-substrate` & `demo-counter-substrate-microvm` in `cmd/ate-setup/internal/demos/countersubstrate`.
+   - [x] Implement `demo-egress-microvm`, `demo-egress-mitm`, and `demo-egress-microvm-mitm` in `cmd/ate-setup/internal/demos/egress`.
+   - [x] Implement `demo-jupyter` in `cmd/ate-setup/internal/demos/jupyter`.
+   - [x] Expose `--otlp-endpoint` and `--actor-memory` CLI flags in `cmd/ate-setup/internal/cmd`.
+   - [x] Register all new demos in `cmd/ate-setup/internal/demos/all/all.go`.
+   - [x] Run `go test ./cmd/ate-setup/...` and ensure all tests pass.
 
 3. **Step 3: Implement and Test Bridge Stubs**
-   - [ ] Write `hack/install-ate.sh` bridge stub supporting flag translation, env variables, multi-action dispatch, and error propagation.
-   - [ ] Write `hack/install-ate-kind.sh` bridge stub.
-   - [ ] Verify bridge stub compatibility with unit/mock tests against `hack-shell-cmdline.md`.
+   - [x] Write `hack/install-ate.sh` bridge stub supporting flag translation, env variables, multi-action dispatch, and error propagation.
+   - [x] Write `hack/install-ate-kind.sh` bridge stub.
+   - [x] Verify bridge stub compatibility with unit/mock tests against `hack-shell-cmdline.md`.
 
 4. **Step 4: Clean up & Update Documentation**
-   - [ ] Update `cmd/ate-setup/commands.md` and `cmd/ate-setup/differences.md`.
-   - [ ] Remove obsolete `hack/install-demo-*.sh` scripts.
-   - [ ] Run `make verify` to ensure clean build, formatting, and linting.
+   - [x] Update `cmd/ate-setup/commands.md` and `cmd/ate-setup/differences.md`.
+   - [x] Remove obsolete `hack/install-demo-*.sh` scripts.
+   - [x] Run `make verify` to ensure clean build, formatting, and linting.

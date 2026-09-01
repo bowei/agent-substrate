@@ -39,7 +39,7 @@ This guide assumes you know Kubernetes and the general shape of agent runtimes (
 | Path | Purpose |
 |---|---|
 | `demos/claude-code-multiplex/claude-code-multiplex.yaml.tmpl` | Namespace, WorkerPool, and ActorTemplates in a single envsubst template |
-| `hack/install-demo-claude-code-multiplex.sh` | Sourced by `install-ate.sh`; registers `--deploy-demo-claude-code-multiplex` and `--delete-demo-claude-code-multiplex` |
+| `cmd/ate-setup/internal/demos/claudemultiplex/` | Registers `deploy demo claude-code-multiplex` and `delete demo claude-code-multiplex` |
 | `demos/claude-code-multiplex/workload/` | The agent container image source (Dockerfile + entrypoint that wires Claude Code; built and pushed by the deploy step) |
 | `demos/claude-code-multiplex/ui/` | Static dashboard (`index.html` + `server.go`) that talks to the cluster |
 
