@@ -93,6 +93,7 @@ func init() {
 	f.IntVar(&opts.PodcertWorkersPerSigner, "podcert-workers-per-signer", 0, "Number of worker goroutines per signer in podcertificate-controller")
 	f.BoolVar(&opts.ExperimentalUseSDSMint, "experimental-use-sdsmint", false, "Deploy egress gateway with dynamic per-SNI certificate minting")
 	f.StringVar(&opts.AdditionalEgressExtprocService, "experimental-additional-egress-extproc-service", "", "Run an additional ext_proc authorization filter served by NS/SVC:PORT (requires --experimental-use-sdsmint)")
+	f.StringVar(&opts.OtlpEndpoint, "otlp-endpoint", "", "Target URL for control plane and workload OTLP telemetry exporter (defaults to ATE_OTLP_ENDPOINT)")
 	f.BoolVar(&opts.NoDevEnv, "no-dev-env", false, "Do not source .ate-dev-env.sh")
 
 	// Cobra's default completion command would run PersistentPreRunE and

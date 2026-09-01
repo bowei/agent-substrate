@@ -40,6 +40,8 @@ type BenchmarkOptions struct {
 	WorkerCount int
 	// SandboxClass is the sandbox runtime: gvisor or microvm.
 	SandboxClass string
+	// ActorMemory is the memory limit for benchmark actors.
+	ActorMemory string
 }
 
 // Validate checks the options the shell script would otherwise reject after
@@ -73,7 +75,11 @@ func (e *Env) DeployBenchmarks(ctx context.Context, opts BenchmarkOptions) error
 			return err
 		}
 	}
-	return e.runScript(ctx, deployLocustScript, deployLocustArgs(opts, e.Cfg.OtlpEndpoint, e.Cfg.BenchmarkActorMemory)...)
+	actorMemory := opts.ActorMemory
+	if actorMemory == "" {
+		actorMemory = e.Cfg.BenchmarkActorMemory
+	}
+	return e.runScript(ctx, deployLocustScript, deployLocustArgs(opts, e.Cfg.OtlpEndpoint, actorMemory)...)
 }
 
 // deployLocustArgs builds the deploy_locust.sh argument list.

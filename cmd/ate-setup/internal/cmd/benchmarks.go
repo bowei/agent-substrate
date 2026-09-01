@@ -61,6 +61,8 @@ func registerBenchmarkFlags(fs *pflag.FlagSet, opts *steps.BenchmarkOptions) {
 	fs.IntVar(&opts.WorkerCount, "worker-count", 1, "Number of WorkerPool replicas")
 	fs.StringVar(&opts.SandboxClass, "sandbox-class", config.SandboxClassGvisor,
 		"Sandbox runtime for the benchmark WorkerPool: gvisor or microvm")
+	fs.StringVar(&opts.ActorMemory, "actor-memory", "",
+		"Memory limit for benchmark actors (defaults to BENCHMARK_ACTOR_MEMORY)")
 }
 
 func init() {

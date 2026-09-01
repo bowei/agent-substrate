@@ -133,6 +133,7 @@ type Options struct {
 	PodcertWorkersPerSigner        int
 	ExperimentalUseSDSMint         bool
 	AdditionalEgressExtprocService string
+	OtlpEndpoint                   string
 
 	// NoDevEnv skips sourcing .ate-dev-env.sh even when it exists.
 	NoDevEnv bool
@@ -209,7 +210,7 @@ func Load(opts Options) (*Config, error) {
 		ExperimentalUseSDSMint:         sdsmint,
 		AdditionalEgressExtprocService: extproc,
 		AnthropicAPIKey:                env["ANTHROPIC_API_KEY"],
-		OtlpEndpoint:                   env["ATE_OTLP_ENDPOINT"],
+		OtlpEndpoint:                   firstNonEmpty(opts.OtlpEndpoint, env["ATE_OTLP_ENDPOINT"]),
 		BenchmarkActorMemory:           env["BENCHMARK_ACTOR_MEMORY"],
 		shellEnv:                       env,
 	}

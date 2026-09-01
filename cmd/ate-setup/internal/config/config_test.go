@@ -82,8 +82,9 @@ func TestLoadFlagsBeatEnvironment(t *testing.T) {
 	loadEnv(t)
 	t.Setenv("ATE_ATENET_ROUTER", RouterEnvoy)
 	t.Setenv("ATE_INSTALL_ROLLOUT_TIMEOUT", "30s")
+	t.Setenv("ATE_OTLP_ENDPOINT", "http://env.example:4317")
 
-	cfg, err := Load(Options{Router: RouterAgentgateway, RolloutTimeout: "120s"})
+	cfg, err := Load(Options{Router: RouterAgentgateway, RolloutTimeout: "120s", OtlpEndpoint: "http://flag.example:4317"})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -92,6 +93,9 @@ func TestLoadFlagsBeatEnvironment(t *testing.T) {
 	}
 	if want := 120 * time.Second; cfg.RolloutTimeout != want {
 		t.Errorf("RolloutTimeout = %v, want %v", cfg.RolloutTimeout, want)
+	}
+	if want := "http://flag.example:4317"; cfg.OtlpEndpoint != want {
+		t.Errorf("OtlpEndpoint = %q, want %q", cfg.OtlpEndpoint, want)
 	}
 }
 
