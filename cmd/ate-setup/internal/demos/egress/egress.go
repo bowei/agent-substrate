@@ -17,18 +17,41 @@
 package egress
 
 import (
+	"time"
+
 	"github.com/agent-substrate/substrate/cmd/ate-setup/internal/demos"
 	"github.com/agent-substrate/substrate/cmd/ate-setup/internal/steps"
 )
-
-const namespace = "ate-demo-egress"
 
 func init() {
 	demos.Register(&demos.Simple{
 		DemoName:       "demo-egress",
 		Short:          "Egress policy enforcement through atenet",
 		Template:       "demos/egress/egress.yaml.tmpl",
-		Deployments:    []steps.TemplateRef{{Namespace: namespace, Name: "egress"}},
-		ActorTemplates: []steps.TemplateRef{{Namespace: namespace, Name: "egress"}},
+		Deployments:    []steps.TemplateRef{{Namespace: "ate-demo-egress", Name: "egress"}},
+		ActorTemplates: []steps.TemplateRef{{Namespace: "ate-demo-egress", Name: "egress"}},
+	})
+	demos.Register(&demos.Simple{
+		DemoName:       "demo-egress-microvm",
+		Short:          "Egress policy enforcement on micro-VM workers (requires install-microvm-deps.sh)",
+		Template:       "demos/egress/egress-microvm.yaml.tmpl",
+		Deployments:    []steps.TemplateRef{{Namespace: "ate-demo-egress-microvm", Name: "egress-microvm"}},
+		ActorTemplates: []steps.TemplateRef{{Namespace: "ate-demo-egress-microvm", Name: "egress-microvm"}},
+		Timeout:        600 * time.Second,
+	})
+	demos.Register(&demos.Simple{
+		DemoName:       "demo-egress-mitm",
+		Short:          "MITM egress policy enforcement (requires --experimental-use-sdsmint)",
+		Template:       "demos/egress/egress-mitm.yaml.tmpl",
+		Deployments:    []steps.TemplateRef{{Namespace: "ate-demo-egress-mitm", Name: "egress-mitm"}},
+		ActorTemplates: []steps.TemplateRef{{Namespace: "ate-demo-egress-mitm", Name: "egress-mitm"}},
+	})
+	demos.Register(&demos.Simple{
+		DemoName:       "demo-egress-microvm-mitm",
+		Short:          "MITM egress policy enforcement on micro-VM workers (requires sdsmint and microvm)",
+		Template:       "demos/egress/egress-microvm-mitm.yaml.tmpl",
+		Deployments:    []steps.TemplateRef{{Namespace: "ate-demo-egress-microvm-mitm", Name: "egress-microvm-mitm"}},
+		ActorTemplates: []steps.TemplateRef{{Namespace: "ate-demo-egress-microvm-mitm", Name: "egress-microvm-mitm"}},
+		Timeout:        600 * time.Second,
 	})
 }

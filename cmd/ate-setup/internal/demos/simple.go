@@ -16,6 +16,7 @@ package demos
 
 import (
 	"context"
+	"time"
 
 	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -61,7 +62,12 @@ func Render(e *steps.Env, relPath string, extraValues map[string]string, drop []
 // built, the `kubectl wait --for=condition=Ready actortemplate/...` of the demo
 // scripts.
 func WaitActorTemplateReady(ctx context.Context, e *steps.Env, namespace, name string) error {
-	return e.Kube.WaitCondition(ctx, actorTemplateGVK, namespace, name, "Ready", steps.DemoTimeout)
+	return WaitActorTemplateReadyWithTimeout(ctx, e, namespace, name, steps.DemoTimeout)
+}
+
+// WaitActorTemplateReadyWithTimeout blocks until an ActorTemplate is ready or timeout expires.
+func WaitActorTemplateReadyWithTimeout(ctx context.Context, e *steps.Env, namespace, name string, timeout time.Duration) error {
+	return e.Kube.WaitCondition(ctx, actorTemplateGVK, namespace, name, "Ready", timeout)
 }
 
 // Simple covers the demos that are one template plus a fixed set of readiness
@@ -87,6 +93,9 @@ type Simple struct {
 	// ActorTemplates are the demo's ActorTemplates. Their actors are removed
 	// before the manifests at delete time.
 	ActorTemplates []steps.TemplateRef
+
+	// Timeout overrides the default readiness wait timeout.
+	Timeout time.Duration
 
 	// SkipReadinessWait deploys without blocking on the ActorTemplates. The
 	// sandbox demo sets this: it has no long-lived workload, and its template
@@ -141,13 +150,17 @@ func (d *Simple) WaitReady(ctx context.Context, e *steps.Env) error {
 		return nil
 	}
 	log.Stepf("Waiting for %s to be ready...", d.DemoName)
+	timeout := steps.DemoTimeout
+	if d.Timeout > 0 {
+		timeout = d.Timeout
+	}
 	for _, ref := range d.Deployments {
-		if err := e.Kube.RolloutStatus(ctx, kube.KindDeployment, ref.Namespace, ref.Name, steps.DemoTimeout); err != nil {
+		if err := e.Kube.RolloutStatus(ctx, kube.KindDeployment, ref.Namespace, ref.Name, timeout); err != nil {
 			return err
 		}
 	}
 	for _, ref := range d.ActorTemplates {
-		if err := WaitActorTemplateReady(ctx, e, ref.Namespace, ref.Name); err != nil {
+		if err := WaitActorTemplateReadyWithTimeout(ctx, e, ref.Namespace, ref.Name, timeout); err != nil {
 			return err
 		}
 	}
