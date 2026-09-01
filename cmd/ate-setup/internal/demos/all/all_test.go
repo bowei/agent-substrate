@@ -17,6 +17,7 @@ package all_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/agent-substrate/substrate/cmd/ate-setup/internal/config"
@@ -32,17 +33,24 @@ var nonDemoPackages = map[string]bool{
 }
 
 // TestEveryDemoPackageIsLinked walks the demo directories and checks that each
-// one produced a registration. A demo package that no one imports compiles
+// one is linked into package all. A demo package that no one imports compiles
 // fine and then quietly has no subcommand, which this catches.
 func TestEveryDemoPackageIsLinked(t *testing.T) {
 	root, err := config.RepoRoot()
 	if err != nil {
 		t.Fatalf("RepoRoot: %v", err)
 	}
-	entries, err := os.ReadDir(filepath.Join(root, "cmd/ate-setup/internal/demos"))
+	demosDir := filepath.Join(root, "cmd/ate-setup/internal/demos")
+	entries, err := os.ReadDir(demosDir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
+
+	allGoBytes, err := os.ReadFile(filepath.Join(demosDir, "all", "all.go"))
+	if err != nil {
+		t.Fatalf("ReadFile all.go: %v", err)
+	}
+	allGo := string(allGoBytes)
 
 	packages := 0
 	for _, entry := range entries {
@@ -50,11 +58,14 @@ func TestEveryDemoPackageIsLinked(t *testing.T) {
 			continue
 		}
 		packages++
+		expectedImport := "github.com/agent-substrate/substrate/cmd/ate-setup/internal/demos/" + entry.Name()
+		if !strings.Contains(allGo, expectedImport) {
+			t.Errorf("demo package %q is on disk but not imported in package all (missing %q)", entry.Name(), expectedImport)
+		}
 	}
 
-	if registered := len(demos.All()); registered != packages {
-		t.Errorf("%d demo packages on disk but %d registered demos %v; is one missing from package all?",
-			packages, registered, names())
+	if registered := len(demos.All()); registered < packages {
+		t.Errorf("%d demo packages on disk but only %d registered demos %v", packages, registered, names())
 	}
 }
 

@@ -68,7 +68,9 @@ func (e *Env) DeleteDemoActors(ctx context.Context, refs ...TemplateRef) error {
 	for _, ref := range refs {
 		log.Stepf("Deleting actors for %s/%s", ref.Namespace, ref.Name)
 		for _, actor := range actors {
-			if actor.GetActorTemplateNamespace() != ref.Namespace || actor.GetActorTemplateName() != ref.Name {
+			matchLegacy := actor.GetActorTemplateNamespace() == ref.Namespace && actor.GetActorTemplateName() == ref.Name
+			matchSubstrate := actor.GetActorTemplate() != nil && actor.GetActorTemplate().GetAtespace() == ref.Namespace && actor.GetActorTemplate().GetName() == ref.Name
+			if !matchLegacy && !matchSubstrate {
 				continue
 			}
 			actorRef := resources.ActorRefFromActor(actor)
