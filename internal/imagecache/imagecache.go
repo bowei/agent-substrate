@@ -675,24 +675,39 @@ func (s *Store) pullWith(ctx context.Context, parsedRef name.Reference, digest v
 // collapsing concurrent requests for the same layer across images.
 func (s *Store) ensureLayer(ctx context.Context, diffID v1.Hash, layer v1.Layer) (string, error) {
 	dir := s.layerDir(diffID)
-	_, err, _ := s.layerSF.Do(layerFlightKey(diffID.Hex), func() (any, error) {
-		if _, err := os.Stat(filepath.Join(dir, layerFSDirName)); err == nil {
-			// Refresh the dir mtime inside the flight: retireLayer re-checks
-			// the mtime in this same flight, so a layer reused here can
-			// never be renamed away between this stat and the image record
-			// that will re-reference it.
-			now := time.Now()
-			if err := os.Chtimes(dir, now, now); err != nil {
-				slog.WarnContext(ctx, "Failed to refresh layer mtime on reuse", slog.String("diffid", diffID.String()), slog.Any("err", err))
+	fsDir := filepath.Join(dir, layerFSDirName)
+	for {
+		ran := false
+		_, err, _ := s.layerSF.Do(layerFlightKey(diffID.Hex), func() (any, error) {
+			ran = true
+			if _, err := os.Stat(fsDir); err == nil {
+				// Refresh the dir mtime inside the flight: retireLayer re-checks
+				// the mtime in this same flight, so a layer reused here can
+				// never be renamed away between this stat and the image record
+				// that will re-reference it.
+				now := time.Now()
+				if err := os.Chtimes(dir, now, now); err != nil {
+					slog.WarnContext(ctx, "Failed to refresh layer mtime on reuse", slog.String("diffid", diffID.String()), slog.Any("err", err))
+				}
+				return nil, nil
 			}
-			return nil, nil
+			return nil, s.unpackLayerToPool(ctx, diffID, layer)
+		})
+		if ran {
+			if err != nil {
+				return "", err
+			}
+			return dir, nil
 		}
-		return nil, s.unpackLayerToPool(ctx, diffID, layer)
-	})
-	if err != nil {
-		return "", err
+		// Joined another caller's flight on this key: an ensureLayer, or a
+		// retireLayer that may have just renamed the layer away. The shared
+		// result cannot tell these apart, so run a flight of our own: if the
+		// layer is present it costs a stat and the mtime refresh that
+		// protects it from retirement.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 	}
-	return dir, nil
 }
 
 // unpackLayerToPool streams the layer (download → decompress → untar) into a

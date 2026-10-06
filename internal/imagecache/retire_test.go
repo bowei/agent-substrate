@@ -201,3 +201,72 @@ func TestRetireLayerVsEnsureImageRace(t *testing.T) {
 		t.Errorf("final layer dir missing: %v", err)
 	}
 }
+
+// TestEnsureLayerJoiningRetireFlight pins the interleaving behind
+// TestConcurrentEnsureImageAndEvict's rare failure: ensureLayer and
+// retireLayer share a singleflight key, so an ensureLayer arriving while a
+// retirement's rename is in flight joins that flight and gets its result.
+// That result says nothing about whether the layer is present; ensureLayer
+// must not return a dir the joined flight just renamed away.
+func TestEnsureLayerJoiningRetireFlight(t *testing.T) {
+	store := newTestStore(t)
+	layer := layerFromEntries(t, []tarEntry{
+		{name: "f", typeflag: tar.TypeReg, mode: 0o644, body: "hi"},
+	})
+	diffID, err := layer.DiffID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.ensureLayer(ctx, diffID, layer); err != nil {
+		t.Fatalf("ensureLayer (initial): %v", err)
+	}
+	dir := store.layerDir(diffID)
+
+	// singleflight offers no hook to observe a joiner, so hold the flight
+	// open briefly and retry until Do reports it was shared. A missed join
+	// only costs an attempt; never joining fails the test below.
+	joined := false
+	for attempt := 0; attempt < 50 && !joined; attempt++ {
+		if _, err := os.Stat(filepath.Join(dir, layerFSDirName)); err != nil {
+			t.Fatalf("attempt %d: layer not present before the held flight: %v", attempt, err)
+		}
+		started, release := make(chan struct{}), make(chan struct{})
+		sharedCh := make(chan bool, 1)
+		go func() {
+			// Stand-in for retireLayer's flight body: the rename aside.
+			_, _, shared := store.layerSF.Do(layerFlightKey(diffID.Hex), func() (any, error) {
+				close(started)
+				<-release
+				dst := filepath.Join(store.layersDir(), retiredPrefix+"test-"+time.Now().Format("150405.000000000"))
+				return nil, os.Rename(dir, dst)
+			})
+			sharedCh <- shared
+		}()
+		<-started
+
+		type result struct {
+			dir string
+			err error
+		}
+		ensureCh := make(chan result, 1)
+		go func() {
+			d, err := store.ensureLayer(ctx, diffID, layer)
+			ensureCh <- result{d, err}
+		}()
+		time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+		close(release)
+
+		joined = <-sharedCh
+		res := <-ensureCh
+		if res.err != nil {
+			t.Fatalf("attempt %d (joined=%v): ensureLayer: %v", attempt, joined, res.err)
+		}
+		if _, err := os.Stat(filepath.Join(res.dir, layerFSDirName, "f")); err != nil {
+			t.Fatalf("attempt %d (joined=%v): ensureLayer returned an unusable layer dir: %v", attempt, joined, err)
+		}
+	}
+	if !joined {
+		t.Fatal("ensureLayer never joined the held flight; the race was not exercised")
+	}
+}

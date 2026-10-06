@@ -57,7 +57,10 @@ const (
 )
 
 // layerFlightKey is the singleflight key shared by ensureLayer and
-// retireLayer; the retire/reuse interlock depends on both using it.
+// retireLayer; the retire/reuse interlock depends on both using it. A
+// caller that joins a flight it did not start cannot tell which side ran
+// it, so neither trusts a joined result: retireLayer treats it as a veto,
+// ensureLayer runs a flight of its own.
 func layerFlightKey(hex string) string { return "sha256:" + hex }
 
 // isLayerDirName reports whether name is a well-formed sha256 layer
