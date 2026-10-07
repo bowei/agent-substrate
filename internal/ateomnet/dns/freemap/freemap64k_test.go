@@ -19,6 +19,95 @@ import (
 	"testing"
 )
 
+// asInt flattens a (index, ok) result into an int, with -1 for !ok, so tests
+// can compare against a single expected value.
+func asInt(idx uint16, ok bool) int {
+	if !ok {
+		return -1
+	}
+	return int(idx)
+}
+
+// fill sets every index in [start, end).
+func fill(m *Map64k, start, end int) {
+	for i := start; i < end; i++ {
+		m.Set(uint16(i))
+	}
+}
+
+// refMap pairs a Map64k with a naive boolean-slice model of it.
+type refMap struct {
+	m         Map64k
+	occupied  []bool
+	wantCount int
+}
+
+func newRefMap() *refMap {
+	return &refMap{occupied: make([]bool, map64kBits)}
+}
+
+func (r *refMap) set(idx uint16) {
+	if !r.occupied[idx] {
+		r.occupied[idx] = true
+		r.wantCount++
+	}
+	r.m.Set(idx)
+}
+
+func (r *refMap) clear(idx uint16) {
+	if r.occupied[idx] {
+		r.occupied[idx] = false
+		r.wantCount--
+	}
+	r.m.Clear(idx)
+}
+
+func (r *refMap) naiveFindFirstUnsetRange(start uint16, end int) int {
+	for idx := int(start); idx < end; idx++ {
+		if !r.occupied[idx] {
+			return idx
+		}
+	}
+	return -1
+}
+
+func (r *refMap) naiveFindFirstUnsetFrom(start uint16) int {
+	if idx := r.naiveFindFirstUnsetRange(start, map64kBits); idx != -1 {
+		return idx
+	}
+	return r.naiveFindFirstUnsetRange(0, int(start))
+}
+
+// checkRange compares findFirstUnsetRange against the model.
+func (r *refMap) checkRange(t *testing.T, step int, start uint16, end int) {
+	t.Helper()
+	if got, want := r.m.findFirstUnsetRange(start, end), r.naiveFindFirstUnsetRange(start, end); got != want {
+		t.Fatalf("step %d: findFirstUnsetRange(%d, %d) = %d, want %d", step, start, end, got, want)
+	}
+}
+
+// checkFrom compares FindFirstUnsetFrom and FindFirstUnset against the model.
+func (r *refMap) checkFrom(t *testing.T, step int, start uint16) {
+	t.Helper()
+	if got, want := asInt(r.m.FindFirstUnsetFrom(start)), r.naiveFindFirstUnsetFrom(start); got != want {
+		t.Fatalf("step %d: FindFirstUnsetFrom(%d) = %d, want %d", step, start, got, want)
+	}
+	if got, want := asInt(r.m.FindFirstUnset()), r.naiveFindFirstUnsetRange(0, map64kBits); got != want {
+		t.Fatalf("step %d: FindFirstUnset() = %d, want %d", step, got, want)
+	}
+}
+
+// checkInvariants compares Count and IsFull against the model.
+func (r *refMap) checkInvariants(t *testing.T, step int) {
+	t.Helper()
+	if got := r.m.Count(); got != r.wantCount {
+		t.Fatalf("step %d: Count() = %d, want %d", step, got, r.wantCount)
+	}
+	if got, want := r.m.IsFull(), r.wantCount == map64kBits; got != want {
+		t.Fatalf("step %d: IsFull() = %v, want %v", step, got, want)
+	}
+}
+
 func TestGetIndex(t *testing.T) {
 	tests := []struct {
 		index uint16
@@ -44,47 +133,53 @@ func TestGetIndex(t *testing.T) {
 func TestMap64k_Basic(t *testing.T) {
 	var m Map64k
 	if got := m.Count(); got != 0 {
-		t.Fatalf("expected count 0, got %d", got)
+		t.Errorf("expected count 0, got %d", got)
 	}
-	if got := m.FindFirstUnset(); got != 0 {
-		t.Fatalf("expected first unset 0, got %d", got)
+	if m.IsFull() {
+		t.Errorf("expected IsFull() = false on empty map")
+	}
+	if got := asInt(m.FindFirstUnset()); got != 0 {
+		t.Errorf("expected first unset 0, got %d", got)
 	}
 	if m.Get(0) {
-		t.Fatalf("expected Get(0) = false initially")
+		t.Errorf("expected Get(0) = false initially")
 	}
 
 	m.Set(0)
 	if got := m.Count(); got != 1 {
-		t.Fatalf("expected count 1, got %d", got)
+		t.Errorf("expected count 1, got %d", got)
+	}
+	if m.IsFull() {
+		t.Errorf("expected IsFull() = false with 1 bit set")
 	}
 	if !m.Get(0) {
-		t.Fatalf("expected Get(0) = true after Set(0)")
+		t.Errorf("expected Get(0) = true after Set(0)")
 	}
-	if got := m.FindFirstUnset(); got != 1 {
-		t.Fatalf("expected first unset 1, got %d", got)
+	if got := asInt(m.FindFirstUnset()); got != 1 {
+		t.Errorf("expected first unset 1, got %d", got)
 	}
 
 	// Idempotent Set
 	m.Set(0)
 	if got := m.Count(); got != 1 {
-		t.Fatalf("expected count 1 after redundant set, got %d", got)
+		t.Errorf("expected count 1 after redundant set, got %d", got)
 	}
 
 	m.Clear(0)
 	if got := m.Count(); got != 0 {
-		t.Fatalf("expected count 0, got %d", got)
+		t.Errorf("expected count 0, got %d", got)
 	}
 	if m.Get(0) {
-		t.Fatalf("expected Get(0) = false after Clear(0)")
+		t.Errorf("expected Get(0) = false after Clear(0)")
 	}
-	if got := m.FindFirstUnset(); got != 0 {
-		t.Fatalf("expected first unset 0, got %d", got)
+	if got := asInt(m.FindFirstUnset()); got != 0 {
+		t.Errorf("expected first unset 0, got %d", got)
 	}
 
 	// Idempotent Clear
 	m.Clear(0)
 	if got := m.Count(); got != 0 {
-		t.Fatalf("expected count 0 after redundant clear, got %d", got)
+		t.Errorf("expected count 0 after redundant clear, got %d", got)
 	}
 }
 
@@ -111,9 +206,7 @@ func TestMap64k_HierarchyPropagation(t *testing.T) {
 	var m Map64k
 
 	// 1. Fill word 0 (bits 0..63). L1 bit 0 should be set, L2 should still be 0.
-	for i := range uint16(64) {
-		m.Set(i)
-	}
+	fill(&m, 0, 64)
 	if (m.l1[0] & 1) == 0 {
 		t.Errorf("expected l1[0] bit 0 to be set")
 	}
@@ -134,9 +227,7 @@ func TestMap64k_HierarchyPropagation(t *testing.T) {
 	}
 
 	// 2. Fill all 4096 bits in L1 word 0 (words 0..63). L2 bit 0 should be set.
-	for i := uint16(64); i < 4096; i++ {
-		m.Set(i)
-	}
+	fill(&m, 64, 4096)
 	if (m.l2 & 1) == 0 {
 		t.Errorf("expected l2 bit 0 to be set after filling 4096 bits")
 	}
@@ -152,7 +243,7 @@ func TestMap64k_FindFirstUnsetFrom_Empty(t *testing.T) {
 	var m Map64k
 	testIndices := []uint16{0, 1, 63, 64, 100, 1023, 1024, 4095, 4096, 65535}
 	for _, idx := range testIndices {
-		if got := m.FindFirstUnsetFrom(idx); got != int(idx) {
+		if got := asInt(m.FindFirstUnsetFrom(idx)); got != int(idx) {
 			t.Errorf("FindFirstUnsetFrom(%d) on empty map = %d, want %d", idx, got, idx)
 		}
 	}
@@ -160,144 +251,105 @@ func TestMap64k_FindFirstUnsetFrom_Empty(t *testing.T) {
 
 func TestMap64k_FindFirstUnsetFrom_Full(t *testing.T) {
 	var m Map64k
-	for i := range numBits {
-		m.Set(uint16(i))
+	fill(&m, 0, map64kBits)
+	if got := m.Count(); got != map64kBits {
+		t.Fatalf("expected count %d, got %d", map64kBits, got)
 	}
-	if got := m.Count(); got != numBits {
-		t.Fatalf("expected count %d, got %d", numBits, got)
+	if !m.IsFull() {
+		t.Errorf("expected IsFull() = true on full map")
 	}
-	if got := m.FindFirstUnset(); got != -1 {
-		t.Fatalf("FindFirstUnset on full map = %d, want -1", got)
+	if _, ok := m.FindFirstUnset(); ok {
+		t.Errorf("FindFirstUnset on full map returned ok = true")
 	}
 	for _, idx := range []uint16{0, 1, 100, 4096, 65535} {
-		if got := m.FindFirstUnsetFrom(idx); got != -1 {
-			t.Errorf("FindFirstUnsetFrom(%d) on full map = %d, want -1", idx, got)
+		if _, ok := m.FindFirstUnsetFrom(idx); ok {
+			t.Errorf("FindFirstUnsetFrom(%d) on full map returned ok = true", idx)
 		}
 	}
 }
 
 func TestMap64k_FindFirstUnsetFrom_SingleHole(t *testing.T) {
 	var m Map64k
-	for i := range numBits {
-		m.Set(uint16(i))
-	}
+	fill(&m, 0, map64kBits)
 
 	testHoles := []uint16{0, 1, 63, 64, 127, 128, 4095, 4096, 32768, 65534, 65535}
 	for _, hole := range testHoles {
 		m.Clear(hole)
-		if got := m.FindFirstUnset(); got != int(hole) {
+		if m.IsFull() {
+			t.Errorf("hole %d: expected IsFull() = false", hole)
+		}
+		if got := asInt(m.FindFirstUnset()); got != int(hole) {
 			t.Errorf("hole %d: FindFirstUnset = %d, want %d", hole, got, hole)
 		}
 
 		// Starting from any index should find the only hole
-		for _, start := range []uint16{0, hole, uint16((int(hole) + 1) % numBits), 65535} {
-			if got := m.FindFirstUnsetFrom(start); got != int(hole) {
+		for _, start := range []uint16{0, hole, hole + 1, 65535} {
+			if got := asInt(m.FindFirstUnsetFrom(start)); got != int(hole) {
 				t.Errorf("hole %d, start %d: FindFirstUnsetFrom = %d, want %d", hole, start, got, hole)
 			}
 		}
 
 		m.Set(hole)
+		if !m.IsFull() {
+			t.Errorf("hole %d: expected IsFull() = true after re-setting hole", hole)
+		}
 	}
 }
 
 func TestMap64k_FindFirstUnsetFrom_Levels(t *testing.T) {
+	check := func(t *testing.T, m *Map64k, start uint16, want int) {
+		t.Helper()
+		if got := asInt(m.FindFirstUnsetFrom(start)); got != want {
+			t.Errorf("FindFirstUnsetFrom(%d) = %d, want %d", start, got, want)
+		}
+	}
+
 	t.Run("same L0 word", func(t *testing.T) {
 		var m Map64k
-		// Fill bits 0..9
-		for i := range uint16(10) {
-			m.Set(i)
-		}
-		// Search from 0 should find 10
-		if got := m.FindFirstUnsetFrom(0); got != 10 {
-			t.Errorf("got %d, want 10", got)
-		}
-		// Search from 5 should find 10
-		if got := m.FindFirstUnsetFrom(5); got != 10 {
-			t.Errorf("got %d, want 10", got)
-		}
-		// Search from 10 should find 10
-		if got := m.FindFirstUnsetFrom(10); got != 10 {
-			t.Errorf("got %d, want 10", got)
+		fill(&m, 0, 10)
+		for _, start := range []uint16{0, 5, 10} {
+			check(t, &m, start, 10)
 		}
 	})
 
 	t.Run("next L0 word in same L1 word", func(t *testing.T) {
 		var m Map64k
 		// Fill L0 word 0 (bits 0..63) and bits 0..4 of word 1 (bits 64..68)
-		for i := range uint16(69) {
-			m.Set(i)
-		}
-		if got := m.FindFirstUnsetFrom(0); got != 69 {
-			t.Errorf("got %d, want 69", got)
-		}
-		if got := m.FindFirstUnsetFrom(63); got != 69 {
-			t.Errorf("got %d, want 69", got)
-		}
-		if got := m.FindFirstUnsetFrom(64); got != 69 {
-			t.Errorf("got %d, want 69", got)
+		fill(&m, 0, 69)
+		for _, start := range []uint16{0, 63, 64} {
+			check(t, &m, start, 69)
 		}
 	})
 
 	t.Run("next L1 word from L2", func(t *testing.T) {
 		var m Map64k
-		// Fill entire L1 word 0 (L0 words 0..63, which is bits 0..4095)
-		for i := range uint16(4096) {
-			m.Set(i)
-		}
-		// Set bits 4096..4099 in L1 word 1
-		for i := uint16(4096); i < 4100; i++ {
-			m.Set(i)
-		}
-		if got := m.FindFirstUnsetFrom(0); got != 4100 {
-			t.Errorf("got %d, want 4100", got)
-		}
-		if got := m.FindFirstUnsetFrom(2000); got != 4100 {
-			t.Errorf("got %d, want 4100", got)
-		}
-		if got := m.FindFirstUnsetFrom(4095); got != 4100 {
-			t.Errorf("got %d, want 4100", got)
-		}
-		if got := m.FindFirstUnsetFrom(4096); got != 4100 {
-			t.Errorf("got %d, want 4100", got)
+		// Fill entire L1 word 0 (bits 0..4095) and bits 4096..4099 in L1 word 1.
+		fill(&m, 0, 4100)
+		for _, start := range []uint16{0, 2000, 4095, 4096} {
+			check(t, &m, start, 4100)
 		}
 
-		// Fill the rest of L1 word 1 (bits 4100..8191) and bits 8192..8199 in L1 word 2
-		for i := uint16(4100); i < 8200; i++ {
-			m.Set(i)
-		}
+		// Fill the rest of L1 word 1 and bits 8192..8199 in L1 word 2.
+		fill(&m, 4100, 8200)
 		for _, start := range []uint16{0, 4095, 4096, 8191, 8192} {
-			if got := m.FindFirstUnsetFrom(start); got != 8200 {
-				t.Errorf("start %d: got %d, want 8200", start, got)
-			}
+			check(t, &m, start, 8200)
 		}
 	})
 
 	t.Run("wrap around", func(t *testing.T) {
 		var m Map64k
-		// Fill bits 100 to 65535
-		for i := 100; i < numBits; i++ {
-			m.Set(uint16(i))
-		}
-		// Also fill bits 0..9
-		for i := range uint16(10) {
-			m.Set(i)
-		}
+		fill(&m, 100, map64kBits)
+		fill(&m, 0, 10)
 		// Search from 100 should wrap around and find 10
-		if got := m.FindFirstUnsetFrom(100); got != 10 {
-			t.Errorf("got %d, want 10", got)
-		}
-		if got := m.FindFirstUnsetFrom(65535); got != 10 {
-			t.Errorf("got %d, want 10", got)
+		for _, start := range []uint16{100, 65535} {
+			check(t, &m, start, 10)
 		}
 	})
 
 	t.Run("wrap around with last bit set", func(t *testing.T) {
 		var m Map64k
-		// Fill only the very last bit
 		m.Set(65535)
-		if got := m.FindFirstUnsetFrom(65535); got != 0 {
-			t.Errorf("got %d, want 0", got)
-		}
+		check(t, &m, 65535, 0)
 	})
 }
 
@@ -313,9 +365,7 @@ func TestMap64k_FindFirstUnsetRange(t *testing.T) {
 	}
 
 	// Range within single word
-	for i := uint16(10); i < 20; i++ {
-		m.Set(i)
-	}
+	fill(&m, 10, 20)
 	if got := m.findFirstUnsetRange(10, 20); got != -1 {
 		t.Errorf("range [10, 20) fully set, got %d, want -1", got)
 	}
@@ -327,9 +377,7 @@ func TestMap64k_FindFirstUnsetRange(t *testing.T) {
 	}
 
 	// Range spanning word boundary
-	for i := uint16(60); i < 64; i++ {
-		m.Set(i)
-	}
+	fill(&m, 60, 64)
 	// Bits 60..63 are set, 64 is unset
 	if got := m.findFirstUnsetRange(60, 64); got != -1 {
 		t.Errorf("range [60, 64) fully set, got %d, want -1", got)
@@ -339,9 +387,7 @@ func TestMap64k_FindFirstUnsetRange(t *testing.T) {
 	}
 
 	// Range spanning L1 boundary (word 63 to word 64, bit 4095 to 4096)
-	for i := uint16(4090); i < 4096; i++ {
-		m.Set(i)
-	}
+	fill(&m, 4090, 4096)
 	if got := m.findFirstUnsetRange(4090, 4096); got != -1 {
 		t.Errorf("range [4090, 4096) fully set, got %d, want -1", got)
 	}
@@ -350,165 +396,120 @@ func TestMap64k_FindFirstUnsetRange(t *testing.T) {
 	}
 
 	// Full span
-	if got := m.findFirstUnsetRange(0, numBits); got != 0 {
-		t.Errorf("range [0, numBits), got %d, want 0", got)
+	if got := m.findFirstUnsetRange(0, map64kBits); got != 0 {
+		t.Errorf("range [0, map64kBits), got %d, want 0", got)
 	}
 
 	// Full map
-	for i := range numBits {
-		m.Set(uint16(i))
-	}
-	if got := m.findFirstUnsetRange(0, numBits); got != -1 {
-		t.Errorf("range [0, numBits) on full map, got %d, want -1", got)
+	fill(&m, 0, map64kBits)
+	if got := m.findFirstUnsetRange(0, map64kBits); got != -1 {
+		t.Errorf("range [0, map64kBits) on full map, got %d, want -1", got)
 	}
 	if got := m.findFirstUnsetRange(100, 200); got != -1 {
 		t.Errorf("range [100, 200) on full map, got %d, want -1", got)
 	}
 }
 
+// TestMap64k_FindFirstUnsetRange_Cutoffs checks that a free bit found by the
+// L1 (step 2) and L2 (step 3) scans is rejected when it lies past `end`.
+func TestMap64k_FindFirstUnsetRange_Cutoffs(t *testing.T) {
+	t.Run("L1 scan", func(t *testing.T) {
+		var m Map64k
+		fill(&m, 0, 128) // L0 words 0 and 1 full; first free is 128.
+		if got := m.findFirstUnsetRange(0, 100); got != -1 {
+			t.Errorf("range [0, 100), got %d, want -1", got)
+		}
+		if got := m.findFirstUnsetRange(0, 128); got != -1 {
+			t.Errorf("range [0, 128), got %d, want -1", got)
+		}
+		if got := m.findFirstUnsetRange(0, 129); got != 128 {
+			t.Errorf("range [0, 129), got %d, want 128", got)
+		}
+	})
+
+	t.Run("L2 scan", func(t *testing.T) {
+		var m Map64k
+		fill(&m, 0, 8192) // L1 words 0 and 1 full; first free is 8192.
+		if got := m.findFirstUnsetRange(100, 5000); got != -1 {
+			t.Errorf("range [100, 5000), got %d, want -1", got)
+		}
+		if got := m.findFirstUnsetRange(100, 8192); got != -1 {
+			t.Errorf("range [100, 8192), got %d, want -1", got)
+		}
+		if got := m.findFirstUnsetRange(100, 9000); got != 8192 {
+			t.Errorf("range [100, 9000), got %d, want 8192", got)
+		}
+	})
+}
+
 // TestMap64k_Differential against a naive linear search on a boolean slice.
 func TestMap64k_Differential(t *testing.T) {
-	var m Map64k
-	occupied := make([]bool, numBits)
-	var wantCount uint
-
-	setBit := func(idx uint16) {
-		if !occupied[idx] {
-			occupied[idx] = true
-			wantCount++
-		}
-		m.Set(idx)
-	}
-	clearBit := func(idx uint16) {
-		if occupied[idx] {
-			occupied[idx] = false
-			wantCount--
-		}
-		m.Clear(idx)
-	}
-
-	naiveFindFirstUnsetRange := func(start uint16, end int) int {
-		for idx := int(start); idx < end; idx++ {
-			if !occupied[idx] {
-				return idx
-			}
-		}
-		return -1
-	}
-
-	naiveFindFirstUnsetFrom := func(start uint16) int {
-		if idx := naiveFindFirstUnsetRange(start, numBits); idx != -1 {
-			return idx
-		}
-		return naiveFindFirstUnsetRange(0, int(start))
-	}
-
+	ref := newRefMap()
 	r := rand.New(rand.NewPCG(42, 1337))
 
 	for step := range 5000 {
 		op := r.IntN(12)
 		switch {
 		case op < 3: // Set a random bit
-			idx := uint16(r.IntN(numBits))
-			setBit(idx)
-			if !m.Get(idx) {
+			idx := uint16(r.IntN(map64kBits))
+			ref.set(idx)
+			if !ref.m.Get(idx) {
 				t.Fatalf("step %d: Get(%d) = false after Set", step, idx)
 			}
 		case op < 5: // Clear a random bit
-			idx := uint16(r.IntN(numBits))
-			clearBit(idx)
-			if m.Get(idx) {
+			idx := uint16(r.IntN(map64kBits))
+			ref.clear(idx)
+			if ref.m.Get(idx) {
 				t.Fatalf("step %d: Get(%d) = true after Clear", step, idx)
 			}
 		case op == 5: // Set an entire 64-bit L0 word
 			base := uint16(r.IntN(l0words) * wordSize)
 			for i := range uint16(wordSize) {
-				setBit(base + i)
+				ref.set(base + i)
 			}
 		case op == 6: // Clear an entire 64-bit L0 word
 			base := uint16(r.IntN(l0words) * wordSize)
 			for i := range uint16(wordSize) {
-				clearBit(base + i)
+				ref.clear(base + i)
 			}
 		case op == 7: // Set or clear an entire 4096-bit L1 block
 			base := uint16(r.IntN(l1words) * wordSize * wordSize)
-			fill := r.IntN(2) == 0
+			set := r.IntN(2) == 0
 			for i := range uint16(wordSize * wordSize) {
-				if fill {
-					setBit(base + i)
+				if set {
+					ref.set(base + i)
 				} else {
-					clearBit(base + i)
+					ref.clear(base + i)
 				}
 			}
 		case op < 10: // Query range
-			start := uint16(r.IntN(numBits))
-			end := int(start) + r.IntN(numBits-int(start)+1)
-			expected := naiveFindFirstUnsetRange(start, end)
-			got := m.findFirstUnsetRange(start, end)
-			if got != expected {
-				t.Fatalf("step %d: findFirstUnsetRange(%d, %d) = %d, want %d", step, start, end, got, expected)
-			}
+			start := uint16(r.IntN(map64kBits))
+			end := int(start) + r.IntN(map64kBits-int(start)+1)
+			ref.checkRange(t, step, start, end)
 		default: // Query from
-			start := uint16(r.IntN(numBits))
-			expected := naiveFindFirstUnsetFrom(start)
-			got := m.FindFirstUnsetFrom(start)
-			if got != expected {
-				t.Fatalf("step %d: FindFirstUnsetFrom(%d) = %d, want %d", step, start, got, expected)
-			}
+			ref.checkFrom(t, step, uint16(r.IntN(map64kBits)))
 		}
 
-		if got := m.Count(); got != wantCount {
-			t.Fatalf("step %d: Count() = %d, want %d", step, got, wantCount)
-		}
+		ref.checkInvariants(t, step)
 	}
 }
 
 func TestMap64k_Differential_Dense(t *testing.T) {
-	var m Map64k
-	occupied := make([]bool, numBits)
-	var wantCount uint
-
-	setBit := func(idx uint16) {
-		if !occupied[idx] {
-			occupied[idx] = true
-			wantCount++
-		}
-		m.Set(idx)
-	}
-	clearBit := func(idx uint16) {
-		if occupied[idx] {
-			occupied[idx] = false
-			wantCount--
-		}
-		m.Clear(idx)
-	}
-
-	naiveFindFirstUnsetRange := func(start uint16, end int) int {
-		for idx := int(start); idx < end; idx++ {
-			if !occupied[idx] {
-				return idx
-			}
-		}
-		return -1
-	}
-
-	naiveFindFirstUnsetFrom := func(start uint16) int {
-		if idx := naiveFindFirstUnsetRange(start, numBits); idx != -1 {
-			return idx
-		}
-		return naiveFindFirstUnsetRange(0, int(start))
-	}
-
+	ref := newRefMap()
 	r := rand.New(rand.NewPCG(99, 12345))
 
 	// Start completely full so all L1 and L2 summary bits are set, then punch a few holes.
-	for i := range numBits {
-		setBit(uint16(i))
+	for i := range map64kBits {
+		ref.set(uint16(i))
 	}
+	// holes records every cleared index. It may contain duplicates (clearing an
+	// already-free bit appends it again); that is harmless and keeps the
+	// property that an empty holes list means the map is completely full, so
+	// the test regularly drives the map back to full.
 	var holes []uint16
 	for range 16 {
-		idx := uint16(r.IntN(numBits))
-		clearBit(idx)
+		idx := uint16(r.IntN(map64kBits))
+		ref.clear(idx)
 		holes = append(holes, idx)
 	}
 
@@ -518,96 +519,106 @@ func TestMap64k_Differential_Dense(t *testing.T) {
 		case op < 3: // Plug an existing hole (or random bit) so L0/L1/L2 words become full again
 			if len(holes) > 0 {
 				hIdx := r.IntN(len(holes))
-				setBit(holes[hIdx])
+				ref.set(holes[hIdx])
 				holes[hIdx] = holes[len(holes)-1]
 				holes = holes[:len(holes)-1]
 			} else {
-				setBit(uint16(r.IntN(numBits)))
+				ref.set(uint16(r.IntN(map64kBits)))
 			}
 		case op < 5: // Punch a new hole
-			idx := uint16(r.IntN(numBits))
-			clearBit(idx)
+			idx := uint16(r.IntN(map64kBits))
+			ref.clear(idx)
 			holes = append(holes, idx)
 		case op < 7: // Query range
-			start := uint16(r.IntN(numBits))
-			end := int(start) + r.IntN(numBits-int(start)+1)
-			expected := naiveFindFirstUnsetRange(start, end)
-			got := m.findFirstUnsetRange(start, end)
-			if got != expected {
-				t.Fatalf("dense step %d: findFirstUnsetRange(%d, %d) = %d, want %d", step, start, end, got, expected)
-			}
+			start := uint16(r.IntN(map64kBits))
+			end := int(start) + r.IntN(map64kBits-int(start)+1)
+			ref.checkRange(t, step, start, end)
 		default: // Query from and FindFirstUnset
-			start := uint16(r.IntN(numBits))
-			expected := naiveFindFirstUnsetFrom(start)
-			got := m.FindFirstUnsetFrom(start)
-			if got != expected {
-				t.Fatalf("dense step %d: FindFirstUnsetFrom(%d) = %d, want %d", step, start, got, expected)
-			}
-			if gotFirst, wantFirst := m.FindFirstUnset(), naiveFindFirstUnsetRange(0, numBits); gotFirst != wantFirst {
-				t.Fatalf("dense step %d: FindFirstUnset() = %d, want %d", step, gotFirst, wantFirst)
-			}
+			ref.checkFrom(t, step, uint16(r.IntN(map64kBits)))
 		}
 
-		if got := m.Count(); got != wantCount {
-			t.Fatalf("dense step %d: Count() = %d, want %d", step, got, wantCount)
-		}
+		ref.checkInvariants(t, step)
 	}
+}
+
+// singleHoleMap returns a full map with only index 50000 free.
+func singleHoleMap() *Map64k {
+	var m Map64k
+	fill(&m, 0, map64kBits)
+	m.Clear(50000)
+	return &m
+}
+
+// sparseMap returns a map with ~37% of bits set at random.
+func sparseMap() *Map64k {
+	var m Map64k
+	r := rand.New(rand.NewPCG(1, 2))
+	for range 30000 {
+		m.Set(uint16(r.IntN(map64kBits)))
+	}
+	return &m
 }
 
 func BenchmarkFindFirstUnsetFrom(b *testing.B) {
 	b.Run("sparse", func(b *testing.B) {
-		var m Map64k
-		r := rand.New(rand.NewPCG(1, 2))
-		for range 30000 {
-			m.Set(uint16(r.IntN(numBits)))
-		}
-
-		b.ResetTimer()
-		for i := range b.N {
-			m.FindFirstUnsetFrom(uint16(i % numBits))
+		m := sparseMap()
+		var i uint16
+		for b.Loop() {
+			m.FindFirstUnsetFrom(i)
+			i++
 		}
 	})
 
 	b.Run("dense_single_hole", func(b *testing.B) {
-		var m Map64k
-		for i := range numBits {
-			m.Set(uint16(i))
-		}
-		m.Clear(50000)
-
-		b.ResetTimer()
-		for i := range b.N {
-			m.FindFirstUnsetFrom(uint16(i % numBits))
+		m := singleHoleMap()
+		var i uint16
+		for b.Loop() {
+			m.FindFirstUnsetFrom(i)
+			i++
 		}
 	})
 }
 
 func BenchmarkFindFirstUnsetRange(b *testing.B) {
 	b.Run("sparse", func(b *testing.B) {
-		var m Map64k
-		r := rand.New(rand.NewPCG(1, 2))
-		for range 30000 {
-			m.Set(uint16(r.IntN(numBits)))
-		}
-
-		b.ResetTimer()
-		for i := range b.N {
-			start := uint16(i % (numBits - 100))
+		m := sparseMap()
+		var i int
+		for b.Loop() {
+			start := uint16(i % (map64kBits - 100))
 			m.findFirstUnsetRange(start, int(start)+100)
+			i++
 		}
 	})
 
 	b.Run("dense_single_hole", func(b *testing.B) {
-		var m Map64k
-		for i := range numBits {
-			m.Set(uint16(i))
+		m := singleHoleMap()
+		var i int
+		for b.Loop() {
+			start := uint16(i % (map64kBits - 100))
+			m.findFirstUnsetRange(start, map64kBits)
+			i++
 		}
-		m.Clear(50000)
+	})
+}
 
-		b.ResetTimer()
-		for i := range b.N {
-			start := uint16(i % (numBits - 100))
-			m.findFirstUnsetRange(start, numBits)
+// BenchmarkSetClear measures an allocate/free cycle, including the L1/L2
+// summary updates when a word transitions between full and not full.
+func BenchmarkSetClear(b *testing.B) {
+	b.Run("sparse", func(b *testing.B) {
+		var m Map64k
+		var i uint16
+		for b.Loop() {
+			m.Set(i)
+			m.Clear(i)
+			i++
+		}
+	})
+
+	b.Run("dense_single_hole", func(b *testing.B) {
+		m := singleHoleMap()
+		for b.Loop() {
+			m.Set(50000) // Fills L0, L1 and L2.
+			m.Clear(50000)
 		}
 	})
 }
