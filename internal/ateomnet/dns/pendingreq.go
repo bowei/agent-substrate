@@ -91,8 +91,8 @@ func (p *pendingRequests) record(
 	hasSlot bool,
 ) (uint16, bool) {
 	if len(raw) < 2 || len(upstreams) == 0 {
-		if hasSlot && p.limiter != nil {
-			<-p.limiter.inFlight
+		if hasSlot {
+			p.limiter.inFlight.release()
 		}
 		return 0, false
 	}
@@ -101,8 +101,8 @@ func (p *pendingRequests) record(
 	defer p.mu.Unlock()
 
 	if len(p.inUse) >= 65536 {
-		if hasSlot && p.limiter != nil {
-			<-p.limiter.inFlight
+		if hasSlot {
+			p.limiter.inFlight.release()
 		}
 		return 0, false
 	}
@@ -142,7 +142,7 @@ func (p *pendingRequests) deleteEntryLocked(key pendingKey, entry *pendingReques
 	delete(p.inUse, key.upstreamID)
 	if entry.hasSlot && p.limiter != nil {
 		entry.hasSlot = false
-		<-p.limiter.inFlight
+		p.limiter.inFlight.release()
 	}
 }
 

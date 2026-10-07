@@ -82,21 +82,17 @@ func (h *tcpHandler) serve(ctx context.Context) error {
 			}
 			return fmt.Errorf("dns: accepting actor DNS connection: %w", err)
 		}
-		if h.limiter != nil {
-			select {
-			case h.limiter.connections <- struct{}{}:
-			default:
-				slog.DebugContext(ctx, "dns relay refused a DNS connection; too many open")
-				_ = conn.Close()
-				continue
-			}
+		if !h.limiter.connections.tryAcquire() {
+			slog.DebugContext(ctx, "dns relay refused a DNS connection; too many open")
+			_ = conn.Close()
+			continue
+
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if h.limiter != nil {
-				defer func() { <-h.limiter.connections }()
-			}
+			defer func() { h.limiter.connections.release() }()
+
 			h.handleConn(ctx, conn)
 		}()
 	}

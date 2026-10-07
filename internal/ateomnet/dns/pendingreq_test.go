@@ -37,7 +37,7 @@ var exampleQuestion = dnsmessage.Question{
 // forwarded query does, and returns its upstream ID and the rewritten query.
 func recordQuery(t *testing.T, p *pendingRequests, clientID uint16, client any, upstreams []string) (uint16, []byte) {
 	t.Helper()
-	p.limiter.inFlight <- struct{}{}
+	p.limiter.inFlight.tryAcquire()
 	raw := dnsQuery(clientID)
 	id, ok := p.record(raw, clientID, exampleQuestion, client, upstreams, true)
 	if !ok {
@@ -132,7 +132,7 @@ func TestPendingRequestsRecord(t *testing.T) {
 	// be normalized.
 	upstreams := []string{"[::ffff:10.96.0.10]:53", "10.96.0.11:53"}
 
-	lim.inFlight <- struct{}{}
+	lim.inFlight.tryAcquire()
 	raw := dnsQuery(0xbeef)
 	before := time.Now()
 	id, ok := p.record(raw, 0xbeef, exampleQuestion, client, upstreams, true)
@@ -199,9 +199,9 @@ func TestPendingRequestsRecordRejects(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			lim := newLimiter()
 			p := newPendingRequests(lim)
-			lim.inFlight <- struct{}{} // held by another query
+			lim.inFlight.tryAcquire() // held by another query
 			if tc.hasSlot {
-				lim.inFlight <- struct{}{}
+				lim.inFlight.tryAcquire()
 			}
 			if _, ok := p.record(tc.raw, 0x1234, exampleQuestion, nil, tc.upstreams, tc.hasSlot); ok {
 				t.Fatal("record succeeded")

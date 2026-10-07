@@ -82,21 +82,20 @@ func (h *dnsHandler) onRequest(raw []byte) action {
 	}
 
 	hasSlot := false
-	if h.limiter != nil {
-		select {
-		case h.limiter.inFlight <- struct{}{}:
-			hasSlot = true
-		default:
-			slog.Debug("dns relay dropped a DNS query; too many in flight")
-			return action{kind: actionDrop}
-		}
-	}
 	forwarded := false
+
 	defer func() {
 		if !forwarded && hasSlot {
-			<-h.limiter.inFlight
+			h.limiter.inFlight.release()
 		}
 	}()
+
+	if h.limiter.inFlight.tryAcquire() {
+		hasSlot = true
+	} else {
+		slog.Debug("dns relay dropped a DNS query; too many in flight")
+		return action{kind: actionDrop}
+	}
 
 	var p dnsmessage.Parser
 	hdr, err := p.Start(raw)
