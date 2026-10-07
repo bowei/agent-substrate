@@ -106,14 +106,14 @@ func (m *Map64k) Clear(index uint16) {
 
 	m.count--
 	wasFull := m.l0[sidx.l0] == ^uint64(0)
-	m.l0[sidx.l0] &= ^(1 << sidx.l0Bit)
+	m.l0[sidx.l0] &^= 1 << sidx.l0Bit
 
 	// If this word was full but is no longer full, propagate the update.
 	if wasFull {
 		l1WasFull := m.l1[sidx.l1] == ^uint64(0)
-		m.l1[sidx.l1] &= ^(1 << sidx.l1Bit)
+		m.l1[sidx.l1] &^= 1 << sidx.l1Bit
 		if l1WasFull {
-			m.l2 &= ^(1 << sidx.l1)
+			m.l2 &^= 1 << sidx.l1
 		}
 	}
 }
