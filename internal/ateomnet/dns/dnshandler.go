@@ -29,11 +29,16 @@ import (
 type actionKind string
 
 const (
-	actionDrop     actionKind = "Drop"
-	actionReply               = "Reply"
-	actionForward             = "Forward"
-	actionFailover            = "Failover"
-	actionDeliver             = "Deliver"
+	// actionDrop the DNS packet.
+	actionDrop actionKind = "Drop"
+	// actionReply immediately to the Actor request.
+	actionReply = "Reply"
+	// actionForward the packet upstream.
+	actionForward = "Forward"
+	// actionFailover to send the request to the next upstream.
+	actionFailover = "Failover"
+	// actionDeliver the DNS response to the Actor.
+	actionDeliver = "Deliver"
 )
 
 // action is the decision returned by onRequest and onResponse.
