@@ -6,12 +6,12 @@ Actor DNS relays DNS requests from the actor to the external world.
 
 ### Relay
 
-- `Relay` -- one per Ateom, holds upstream resolvers and worker-wide concurrency limits, and is used to create the per-Actor `Server`.
+- `Relay` -- one per Ateom, holds upstream resolvers, and is used to create the per-Actor `Server`.
 - `Relay.Serve()` -- creates a per-Actor `Server` that manages DNS requests for the Actor. Returns a `*Server`.
 
 ### Server
 
-`Server` is the per-Actor state for the DNS traffic.
+`Server` is the per-Actor state for the DNS traffic, including per-Actor concurrency limits (`maxInFlightDNS` and `maxDNSConnections`).
 
 - `Server.pendingRequests` map:
   - Allocates a rewritten `upstreamID` (`uint16`) per in-flight query to avoid transaction ID collisions across different actor source ports on the shared egress socket (and prevent predictable upstream IDs).

@@ -409,7 +409,7 @@ func TestRelayClosesTCPConnectionsWhenServingEnds(t *testing.T) {
 	}
 	defer conn.Close()
 	waitFor(t, "the connection to reach an upstream", func() bool { return held.Load() == 1 })
-	if got := len(relay.limiter.connections); got != 1 {
+	if got := len(srv.limiter.connections); got != 1 {
 		t.Fatalf("%d connection slots held before Stop, want 1", got)
 	}
 
@@ -418,7 +418,7 @@ func TestRelayClosesTCPConnectionsWhenServingEnds(t *testing.T) {
 	if err := srv.Stop(stopCtx); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if got := len(relay.limiter.connections); got != 0 {
+	if got := len(srv.limiter.connections); got != 0 {
 		t.Errorf("%d connection slots still held after Stop, want 0", got)
 	}
 
@@ -435,7 +435,7 @@ func TestRelayClosesTCPConnectionsWhenServingEnds(t *testing.T) {
 }
 
 // Stop must cancel queries still being resolved rather than wait out
-// dnsExchangeTimeout, and return their slots to the worker's limiter.
+// dnsExchangeTimeout, and return their slots to the server's limiter.
 func TestStopCancelsUDPQueriesInFlight(t *testing.T) {
 	silent, asked := newSilentResolver(t)
 	relay, err := NewRelayForUpstreams([]string{silent})
@@ -457,7 +457,7 @@ func TestStopCancelsUDPQueriesInFlight(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the resolver never saw the query")
 	}
-	if got := len(relay.limiter.inFlight); got != 1 {
+	if got := len(srv.limiter.inFlight); got != 1 {
 		t.Fatalf("%d queries in flight before Stop, want 1", got)
 	}
 
@@ -467,8 +467,46 @@ func TestStopCancelsUDPQueriesInFlight(t *testing.T) {
 	if err := srv.Stop(stopCtx); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if got := len(relay.limiter.inFlight); got != 0 {
+	if got := len(srv.limiter.inFlight); got != 0 {
 		t.Errorf("%d in-flight slots still held after Stop, want 0", got)
+	}
+}
+
+func TestRelayLimitsArePerActor(t *testing.T) {
+	upstream, held := newHeldTCPResolver(t)
+	relay, err := NewRelayForUpstreams([]string{upstream})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srvA, _, addrA := serveLoopback(t, relay)
+	srvB, _, addrB := serveLoopback(t, relay)
+
+	// Saturate Actor A's TCP connection limit.
+	for range maxDNSConnections {
+		conn, err := net.Dial("tcp", addrA.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+	}
+	waitFor(t, "actor A to fill up", func() bool { return held.Load() == maxDNSConnections })
+	if got := len(srvA.limiter.connections); got != maxDNSConnections {
+		t.Fatalf("actor A connection slots = %d, want %d", got, maxDNSConnections)
+	}
+	if got := len(srvB.limiter.connections); got != 0 {
+		t.Fatalf("actor B connection slots = %d, want 0", got)
+	}
+
+	// Actor B must still accept a TCP connection even though Actor A is full.
+	connB, err := net.Dial("tcp", addrB.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connB.Close()
+	waitFor(t, "actor B connection to reach upstream", func() bool { return held.Load() == maxDNSConnections+1 })
+	if got := len(srvB.limiter.connections); got != 1 {
+		t.Errorf("actor B connection slots = %d, want 1", got)
 	}
 }
 

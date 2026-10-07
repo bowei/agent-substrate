@@ -35,10 +35,17 @@ type netConn struct {
 	tcpListener net.Listener
 }
 
+// limiter caps DNS queries in flight and open TCP connections for one sandbox.
+type limiter struct {
+	inFlight    chan struct{}
+	connections chan struct{}
+}
+
 // Server is one sandbox's running DNS relay, returned by [Relay.Serve].
 type Server struct {
 	n *netConn
 
+	limiter         limiter
 	pendingRequests *pendingRequests
 	dns             *dnsHandler
 	udp             *udpHandler
@@ -54,10 +61,9 @@ func newServer(
 	ctx context.Context,
 	config *serverConfig,
 	netC *netConn,
-	limiter *limiter,
 ) *Server {
-	// Detached from the activation RPC's context but cancelable: the relay's
-	// capacity is the worker's, so teardown must drop queries still in flight.
+	// Detached from the activation RPC's context but cancelable so teardown
+	// drops queries still in flight and releases the actor's sockets.
 	serveCtx, stopServing := context.WithCancel(context.WithoutCancel(ctx))
 
 	if netC.egressUDP == nil {
@@ -76,19 +82,19 @@ func newServer(
 		}
 	}
 
-	pending := newPendingRequests(limiter)
-	dnsH := newDNSHandler(pending, limiter, nil)
-	udpH := newUDPHandler(netC.udp, netC.egressUDP, udpAddrs, dnsH, pending)
-	tcpH := newTCPHandler(netC.tcpListener, netC.dialer, config.upstreams, dnsH, pending, limiter)
-
 	s := &Server{
-		stopServing:     stopServing,
-		n:               netC,
-		pendingRequests: pending,
-		dns:             dnsH,
-		udp:             udpH,
-		tcp:             tcpH,
+		stopServing: stopServing,
+		n:           netC,
+		limiter: limiter{
+			inFlight:    make(chan struct{}, maxInFlightDNS),
+			connections: make(chan struct{}, maxDNSConnections),
+		},
 	}
+	s.pendingRequests = newPendingRequests(&s.limiter)
+	s.dns = newDNSHandler(s.pendingRequests, &s.limiter, nil)
+	s.udp = newUDPHandler(netC.udp, netC.egressUDP, udpAddrs, s.dns, s.pendingRequests)
+	s.tcp = newTCPHandler(netC.tcpListener, netC.dialer, config.upstreams, s.dns, s.pendingRequests, &s.limiter)
+
 	s.serving.Add(2)
 	go func() {
 		defer s.serving.Done()
