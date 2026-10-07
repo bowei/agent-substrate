@@ -22,7 +22,6 @@ import (
 	"log/slog"
 	"net"
 	"sync"
-	"time"
 )
 
 type serverConfig struct {
@@ -38,10 +37,7 @@ type netConn struct {
 
 // Server is one sandbox's running DNS relay, returned by [Relay.Serve].
 type Server struct {
-	config *serverConfig
-
-	n       *netConn
-	limiter *limiter
+	n *netConn
 
 	pendingRequests *pendingRequests
 	dns             *dnsHandler
@@ -86,10 +82,8 @@ func newServer(
 	tcpH := newTCPHandler(netC.tcpListener, netC.dialer, config.upstreams, dnsH, pending, limiter)
 
 	s := &Server{
-		config:          config,
 		stopServing:     stopServing,
 		n:               netC,
-		limiter:         limiter,
 		pendingRequests: pending,
 		dns:             dnsH,
 		udp:             udpH,
@@ -139,184 +133,4 @@ func (s *Server) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		return errors.Join(s.closeErr, fmt.Errorf("dns: waiting for relay to stop: %w", ctx.Err()))
 	}
-}
-
-// servePacket answers UDP queries until ctx is canceled or the socket fails.
-func (s *Server) servePacket(ctx context.Context) error {
-	var wg sync.WaitGroup
-	defer wg.Wait()
-
-	buf := make([]byte, maxDNSDatagram)
-	for {
-		n, from, err := s.n.udp.ReadFrom(buf)
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				return nil
-			}
-			return fmt.Errorf("dns: reading actor DNS query: %w", err)
-		}
-		// Copied: the buffer is reused by the next read.
-		query := make([]byte, n)
-		copy(query, buf[:n])
-
-		select {
-		case s.limiter.inFlight <- struct{}{}:
-		default:
-			slog.DebugContext(ctx, "dns relay dropped a DNS query; too many in flight")
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { <-s.limiter.inFlight }()
-			answer, err := s.exchangeUDP(ctx, query)
-			if err != nil {
-				slog.WarnContext(ctx, "dns relay could not resolve an actor DNS query", slog.Any("err", err))
-				return
-			}
-			if _, err := s.n.udp.WriteTo(answer, from); err != nil && ctx.Err() == nil {
-				slog.WarnContext(ctx, "dns relay could not return a DNS answer", slog.Any("err", err))
-			}
-		}()
-	}
-}
-
-// serveTCP relays TCP DNS connections until ctx is canceled or the listener closes.
-func (s *Server) serveTCP(ctx context.Context) error {
-	// Wait for the relays to drain before returning, so a closed listener
-	// leaves no goroutine still holding a connection slot.
-	var wg sync.WaitGroup
-	defer wg.Wait()
-
-	for {
-		conn, err := s.n.tcpListener.Accept()
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				return nil
-			}
-			return fmt.Errorf("dns: accepting actor DNS connection: %w", err)
-		}
-		select {
-		case s.limiter.connections <- struct{}{}:
-		default:
-			slog.DebugContext(ctx, "dns relay refused a DNS connection; too many open")
-			_ = conn.Close()
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { <-s.limiter.connections }()
-			s.relayTCP(ctx, conn)
-		}()
-	}
-}
-
-func (s *Server) exchangeUDP(ctx context.Context, query []byte) ([]byte, error) {
-	var errs error
-	// deferred holds a server-failure answer to fall back on, see below.
-	var deferred []byte
-	for _, upstream := range s.config.upstreams {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		conn, err := s.n.dialer.DialContext(ctx, "udp", upstream)
-		if err != nil {
-			errs = errors.Join(errs, err)
-			continue
-		}
-		answer, err := func() ([]byte, error) {
-			defer conn.Close()
-			stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-			defer stop()
-			if err := conn.SetDeadline(time.Now().Add(dnsExchangeTimeout)); err != nil {
-				return nil, err
-			}
-			if _, err := conn.Write(query); err != nil {
-				return nil, err
-			}
-			buf := make([]byte, maxDNSDatagram)
-			n, err := conn.Read(buf)
-			if err != nil {
-				return nil, err
-			}
-			return buf[:n], nil
-		}()
-		if err != nil {
-			errs = errors.Join(errs, fmt.Errorf("upstream %s: %w", upstream, err))
-			continue
-		}
-		// SERVFAIL is not an answer, and the sandbox sees only the gateway, so
-		// it cannot try the pod's other resolvers itself. Keep the last one to
-		// return if none does better: a real response beats a timeout.
-		if rcode, ok := failoverRcode(answer); ok {
-			errs = errors.Join(errs, fmt.Errorf("upstream %s: %w", upstream, rcodeError(rcode)))
-			deferred = answer
-			continue
-		}
-		return answer, nil
-	}
-	if deferred != nil {
-		return deferred, nil
-	}
-	return nil, fmt.Errorf("dns: no upstream resolver answered: %w", errs)
-}
-
-// relayTCP copies a DNS stream without parsing its length-prefixed messages.
-func (s *Server) relayTCP(ctx context.Context, downstream net.Conn) {
-	defer downstream.Close()
-
-	var upstream net.Conn
-	var errs error
-	for _, address := range s.config.upstreams {
-		conn, err := s.n.dialer.DialContext(ctx, "tcp", address)
-		if err != nil {
-			errs = errors.Join(errs, err)
-			continue
-		}
-		upstream = conn
-		break
-	}
-	if upstream == nil {
-		slog.WarnContext(ctx, "dns relay could not reach any resolver for an actor DNS connection", slog.Any("err", errs))
-		return
-	}
-	defer upstream.Close()
-
-	// Cancel active copies on teardown to release the worker's connection slots.
-	relayDone := make(chan struct{})
-	defer close(relayDone)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = downstream.Close()
-			_ = upstream.Close()
-		case <-relayDone:
-		}
-	}()
-
-	deadline := time.Now().Add(dnsTCPTimeout)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
-	}
-	_ = downstream.SetDeadline(deadline)
-	_ = upstream.SetDeadline(deadline)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(upstream, downstream)
-		if c, ok := upstream.(*net.TCPConn); ok {
-			_ = c.CloseWrite()
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(downstream, upstream)
-		if c, ok := downstream.(*net.TCPConn); ok {
-			_ = c.CloseWrite()
-		}
-	}()
-	wg.Wait()
 }

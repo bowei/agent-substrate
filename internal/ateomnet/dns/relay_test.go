@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func TestRelayCancelsUDPExchange(t *testing.T) {
@@ -201,16 +202,6 @@ func serveLoopback(t *testing.T, relay *Relay) (*Server, net.Addr, net.Addr) {
 	})
 	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 	return srv, pc.LocalAddr(), lis.Addr()
-}
-
-// unstartedServer builds a Server for relay without serving on any socket, so
-// a test can call its methods directly.
-func unstartedServer(relay *Relay) *Server {
-	return &Server{
-		config:  &serverConfig{upstreams: relay.upstreams},
-		n:       &netConn{dialer: *relay.dialer},
-		limiter: &relay.limiter,
-	}
 }
 
 // serveRelayUDP runs the relay on loopback sockets and returns a connection to it.
@@ -508,7 +499,7 @@ func TestRelayFailsOverOnServerFailure(t *testing.T) {
 	var sickCalls, healthyCalls atomic.Int32
 	sick := newFakeResolver(t, func(query []byte) []byte {
 		sickCalls.Add(1)
-		return dnsAnswer(query, rcodeServFail)
+		return dnsAnswer(query, byte(dnsmessage.RCodeServerFailure))
 	})
 	healthy := newFakeResolver(t, func(query []byte) []byte {
 		healthyCalls.Add(1)
@@ -535,8 +526,8 @@ func TestRelayFailsOverOnServerFailure(t *testing.T) {
 // With every resolver failing there is nothing better to return, and a real
 // SERVFAIL beats a timeout: the sandbox's resolver can act on it.
 func TestRelayReturnsServerFailureWhenAllFail(t *testing.T) {
-	first := newFakeResolver(t, func(query []byte) []byte { return dnsAnswer(query, rcodeServFail) })
-	second := newFakeResolver(t, func(query []byte) []byte { return dnsAnswer(query, rcodeRefused) })
+	first := newFakeResolver(t, func(query []byte) []byte { return dnsAnswer(query, byte(dnsmessage.RCodeServerFailure)) })
+	second := newFakeResolver(t, func(query []byte) []byte { return dnsAnswer(query, byte(dnsmessage.RCodeRefused)) })
 
 	relay, err := NewRelayForUpstreams([]string{first, second})
 	if err != nil {
@@ -547,17 +538,16 @@ func TestRelayReturnsServerFailureWhenAllFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	answer := readWithin(t, client)
-	if got := answer[3] & 0x0f; got != rcodeRefused {
-		t.Errorf("answer rcode = %d, want the last resolver's %d", got, rcodeRefused)
+	if got := dnsmessage.RCode(answer[3] & 0x0f); got != dnsmessage.RCodeRefused {
+		t.Errorf("answer rcode = %v, want the last resolver's %v", got, dnsmessage.RCodeRefused)
 	}
 }
 
 // NXDOMAIN is an answer, not a failure: failing over would ask every resolver
 // about a name that does not exist.
 func TestRelayReturnsNXDomainWithoutFailover(t *testing.T) {
-	const rcodeNXDomain = 3
 	var secondCalls atomic.Int32
-	first := newFakeResolver(t, func(query []byte) []byte { return dnsAnswer(query, rcodeNXDomain) })
+	first := newFakeResolver(t, func(query []byte) []byte { return dnsAnswer(query, byte(dnsmessage.RCodeNameError)) })
 	second := newFakeResolver(t, func(query []byte) []byte {
 		secondCalls.Add(1)
 		return dnsAnswer(query, 0)
@@ -572,8 +562,8 @@ func TestRelayReturnsNXDomainWithoutFailover(t *testing.T) {
 		t.Fatal(err)
 	}
 	answer := readWithin(t, client)
-	if got := answer[3] & 0x0f; got != rcodeNXDomain {
-		t.Errorf("answer rcode = %d, want NXDOMAIN %d", got, rcodeNXDomain)
+	if got := dnsmessage.RCode(answer[3] & 0x0f); got != dnsmessage.RCodeNameError {
+		t.Errorf("answer rcode = %v, want NXDOMAIN %v", got, dnsmessage.RCodeNameError)
 	}
 	if secondCalls.Load() != 0 {
 		t.Error("the relay failed over on NXDOMAIN, which is a valid answer")

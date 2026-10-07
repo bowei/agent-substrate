@@ -21,9 +21,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
-func startTestTCPHandler(t *testing.T, upstreams []string, configure func(*tcpHandler, *stubPacketHandler)) net.Addr {
+func startTestTCPHandler(t *testing.T, upstreams []string, configure func(*tcpHandler, *dnsHandler)) net.Addr {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -35,10 +37,10 @@ func startTestTCPHandler(t *testing.T, upstreams []string, configure func(*tcpHa
 		connections: make(chan struct{}, maxDNSConnections),
 	}
 	pending := newPendingRequests(lim)
-	stub := &stubPacketHandler{pending: pending, lim: lim}
-	h := newTCPHandler(lis, net.Dialer{Timeout: 5 * time.Second}, upstreams, stub, pending, lim)
+	dnsH := newDNSHandler(pending, lim, nil)
+	h := newTCPHandler(lis, net.Dialer{Timeout: 5 * time.Second}, upstreams, dnsH, pending, lim)
 	if configure != nil {
-		configure(h, stub)
+		configure(h, dnsH)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -149,15 +151,9 @@ func TestTCPHandlerSynthesizedReplyAndHalfClose(t *testing.T) {
 		_ = writeTCPFrame(conn, dnsAnswer(q, 0))
 	}()
 
-	addr := startTestTCPHandler(t, []string{lis.Addr().String()}, func(_ *tcpHandler, stub *stubPacketHandler) {
-		stub.onReq = func(raw []byte) (action, bool) {
-			if len(raw) >= 2 && binary.BigEndian.Uint16(raw[0:2]) == 0xbad0 {
-				return action{
-					kind:    actionReply,
-					payload: dnsAnswer(raw, rcodeRefused),
-				}, true
-			}
-			return action{}, false
+	addr := startTestTCPHandler(t, []string{lis.Addr().String()}, func(_ *tcpHandler, dnsH *dnsHandler) {
+		dnsH.allow = func(q dnsmessage.Question) bool {
+			return q.Name.String() != "blocked.example.com."
 		}
 	})
 
@@ -168,9 +164,18 @@ func TestTCPHandlerSynthesizedReplyAndHalfClose(t *testing.T) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 
+	blockedQuery := buildTestMessage(t, dnsmessage.Header{
+		ID:               0xbad0,
+		RecursionDesired: true,
+	}, []dnsmessage.Question{{
+		Name:  dnsmessage.MustNewName("blocked.example.com."),
+		Type:  dnsmessage.TypeA,
+		Class: dnsmessage.ClassINET,
+	}})
+
 	// First frame triggers a synthesized reply; second frame is forwarded, and
 	// then client half-closes its write side.
-	if err := writeTCPFrame(conn, dnsQuery(0xbad0)); err != nil {
+	if err := writeTCPFrame(conn, blockedQuery); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeTCPFrame(conn, dnsQuery(0x1234)); err != nil {
@@ -189,15 +194,15 @@ func TestTCPHandlerSynthesizedReplyAndHalfClose(t *testing.T) {
 		t.Fatalf("reading second frame: %v", err)
 	}
 
-	got := map[uint16]byte{
-		binary.BigEndian.Uint16(r1[0:2]): r1[3] & 0x0f,
-		binary.BigEndian.Uint16(r2[0:2]): r2[3] & 0x0f,
+	got := map[uint16]dnsmessage.RCode{
+		binary.BigEndian.Uint16(r1[0:2]): dnsmessage.RCode(r1[3] & 0x0f),
+		binary.BigEndian.Uint16(r2[0:2]): dnsmessage.RCode(r2[3] & 0x0f),
 	}
-	if got[0xbad0] != rcodeRefused {
-		t.Errorf("0xbad0 rcode = %d, want %d", got[0xbad0], rcodeRefused)
+	if got[0xbad0] != dnsmessage.RCodeRefused {
+		t.Errorf("0xbad0 rcode = %v, want %v", got[0xbad0], dnsmessage.RCodeRefused)
 	}
-	if got[0x1234] != 0 {
-		t.Errorf("0x1234 rcode = %d, want 0", got[0x1234])
+	if got[0x1234] != dnsmessage.RCodeSuccess {
+		t.Errorf("0x1234 rcode = %v, want %v", got[0x1234], dnsmessage.RCodeSuccess)
 	}
 	wg.Wait()
 }

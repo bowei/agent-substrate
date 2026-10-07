@@ -78,7 +78,7 @@ type tcpHandler struct {
 	listener  net.Listener
 	dialer    net.Dialer
 	upstreams []string
-	dns       packetHandler
+	dns       *dnsHandler
 	pending   *pendingRequests
 	limiter   *limiter
 
@@ -89,7 +89,7 @@ func newTCPHandler(
 	listener net.Listener,
 	dialer net.Dialer,
 	upstreams []string,
-	dns packetHandler,
+	dns *dnsHandler,
 	pending *pendingRequests,
 	lim *limiter,
 ) *tcpHandler {

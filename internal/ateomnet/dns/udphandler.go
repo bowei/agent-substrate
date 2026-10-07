@@ -64,12 +64,6 @@ type action struct {
 	hasSlot         bool
 }
 
-// packetHandler is the DNS protocol layer called by the UDP and TCP handlers.
-type packetHandler interface {
-	onRequest(raw []byte) action
-	onResponse(raw []byte, from net.Addr) action
-}
-
 // pendingKey identifies an in-flight request by its rewritten upstream
 // transaction ID and the expected upstream source address.
 type pendingKey struct {
@@ -350,7 +344,7 @@ type udpHandler struct {
 	egress        net.PacketConn
 	upstreams     []*net.UDPAddr
 	upstreamStrs  []string
-	dns           packetHandler
+	dns           *dnsHandler
 	pending       *pendingRequests
 	sweepInterval time.Duration
 }
@@ -359,7 +353,7 @@ func newUDPHandler(
 	ingress net.PacketConn,
 	egress net.PacketConn,
 	upstreams []*net.UDPAddr,
-	dns packetHandler,
+	dns *dnsHandler,
 	pending *pendingRequests,
 ) *udpHandler {
 	strs := make([]string, len(upstreams))

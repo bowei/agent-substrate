@@ -52,9 +52,10 @@ type limiter struct {
 	connections chan struct{}
 }
 
-// Relay forwards UDP and TCP DNS unchanged to the worker pod's resolvers.
-// It listens in the sandbox's gateway namespace and dials from the worker's.
-// DNS bypasses the egress tunnel and is not checked against egress policy.
+// Relay validates and forwards UDP and TCP DNS queries to the worker pod's
+// resolvers. It listens in the sandbox's gateway namespace and dials from the
+// worker's. DNS bypasses the egress tunnel and is not checked against egress
+// policy.
 type Relay struct {
 	upstreams []string
 

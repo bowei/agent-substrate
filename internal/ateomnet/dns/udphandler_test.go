@@ -15,7 +15,6 @@
 package dns
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"net"
@@ -26,95 +25,7 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
-// stubPacketHandler is a test double for packetHandler used to test udpHandler
-// and tcpHandler in isolation from dnshandler.go.
-type stubPacketHandler struct {
-	pending *pendingRequests
-	lim     *limiter
-	onReq   func(raw []byte) (action, bool)
-}
-
-func (s *stubPacketHandler) onRequest(raw []byte) action {
-	if s.onReq != nil {
-		if act, ok := s.onReq(raw); ok {
-			return act
-		}
-	}
-	if len(raw) < 12 {
-		return action{kind: actionDrop}
-	}
-	hasSlot := false
-	if s.lim != nil {
-		select {
-		case s.lim.inFlight <- struct{}{}:
-			hasSlot = true
-		default:
-			return action{kind: actionDrop}
-		}
-	}
-	id := binary.BigEndian.Uint16(raw[0:2])
-	return action{
-		kind:            actionForward,
-		clientRequestID: id,
-		question: dnsmessage.Question{
-			Name:  dnsmessage.MustNewName("example.com."),
-			Type:  dnsmessage.TypeA,
-			Class: dnsmessage.ClassINET,
-		},
-		hasSlot: hasSlot,
-	}
-}
-
-func (s *stubPacketHandler) onResponse(raw []byte, from net.Addr) action {
-	if len(raw) < 12 || raw[2]&0x80 == 0 {
-		return action{kind: actionDrop}
-	}
-	upstreamID := binary.BigEndian.Uint16(raw[0:2])
-	key := pendingKey{
-		upstreamID:      upstreamID,
-		transportSource: normalizeAddr(from),
-	}
-
-	s.pending.mu.Lock()
-	defer s.pending.mu.Unlock()
-
-	entry, ok := s.pending.entries[key]
-	if !ok {
-		return action{kind: actionDrop}
-	}
-
-	rcode := raw[3] & 0x0f
-	if (rcode == rcodeServFail || rcode == rcodeNotImp || rcode == rcodeRefused) && entry.upstreamIdx+1 < len(entry.upstreams) {
-		entry.deferredResp = bytes.Clone(raw)
-		delete(s.pending.entries, key)
-		entry.upstreamIdx++
-		entry.expiry = time.Now().Add(s.pending.timeoutForAttempt(entry.upstreamIdx, len(entry.upstreams)))
-		nextKey := pendingKey{
-			upstreamID:      upstreamID,
-			transportSource: normalizeAddrString(entry.upstreams[entry.upstreamIdx]),
-		}
-		s.pending.entries[nextKey] = entry
-		return action{
-			kind:        actionFailover,
-			payload:     bytes.Clone(entry.rawQuery),
-			upstreamIdx: entry.upstreamIdx,
-		}
-	}
-
-	clientID := entry.clientRequestID
-	clientSource := entry.clientSource
-	s.pending.deleteEntryLocked(key, entry)
-
-	out := bytes.Clone(raw)
-	binary.BigEndian.PutUint16(out[0:2], clientID)
-	return action{
-		kind:         actionDeliver,
-		payload:      out,
-		clientSource: clientSource,
-	}
-}
-
-func startTestUDPHandler(t *testing.T, upstreams []string, configure func(*udpHandler, *stubPacketHandler)) net.Conn {
+func startTestUDPHandler(t *testing.T, upstreams []string, configure func(*udpHandler, *dnsHandler)) net.Conn {
 	t.Helper()
 	ingress, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -142,10 +53,10 @@ func startTestUDPHandler(t *testing.T, upstreams []string, configure func(*udpHa
 		connections: make(chan struct{}, maxDNSConnections),
 	}
 	pending := newPendingRequests(lim)
-	stub := &stubPacketHandler{pending: pending, lim: lim}
-	h := newUDPHandler(ingress, egress, udpAddrs, stub, pending)
+	dnsH := newDNSHandler(pending, lim, nil)
+	h := newUDPHandler(ingress, egress, udpAddrs, dnsH, pending)
 	if configure != nil {
-		configure(h, stub)
+		configure(h, dnsH)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -198,13 +109,8 @@ func TestUDPHandlerSynthesizedReply(t *testing.T) {
 		return dnsAnswer(query, 0)
 	})
 
-	client := startTestUDPHandler(t, []string{upstream}, func(_ *udpHandler, stub *stubPacketHandler) {
-		stub.onReq = func(raw []byte) (action, bool) {
-			return action{
-				kind:    actionReply,
-				payload: dnsAnswer(raw, rcodeRefused),
-			}, true
-		}
+	client := startTestUDPHandler(t, []string{upstream}, func(_ *udpHandler, dnsH *dnsHandler) {
+		dnsH.allow = func(dnsmessage.Question) bool { return false }
 	})
 
 	query := dnsQuery(0x9999)
@@ -212,8 +118,8 @@ func TestUDPHandlerSynthesizedReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := readWithin(t, client)
-	if rcode := got[3] & 0x0f; rcode != rcodeRefused {
-		t.Errorf("synthesized rcode = %d, want %d", rcode, rcodeRefused)
+	if rcode := dnsmessage.RCode(got[3] & 0x0f); rcode != dnsmessage.RCodeRefused {
+		t.Errorf("synthesized rcode = %v, want %v", rcode, dnsmessage.RCodeRefused)
 	}
 	if upstreamCalls.Load() != 0 {
 		t.Errorf("upstream was called %d times on synthesized reply, want 0", upstreamCalls.Load())
@@ -226,7 +132,7 @@ func TestUDPHandlerFailoverOnSweepTimeoutAndDeferredDelivery(t *testing.T) {
 		return dnsAnswer(query, 0)
 	})
 
-	client := startTestUDPHandler(t, []string{silent1, healthy}, func(h *udpHandler, _ *stubPacketHandler) {
+	client := startTestUDPHandler(t, []string{silent1, healthy}, func(h *udpHandler, _ *dnsHandler) {
 		h.pending.attemptTimeout = 40 * time.Millisecond
 		h.sweepInterval = 10 * time.Millisecond
 	})
@@ -245,10 +151,10 @@ func TestUDPHandlerFailoverOnSweepTimeoutAndDeferredDelivery(t *testing.T) {
 	// Also verify that if the first upstream returns SERVFAIL and the second
 	// upstream times out, the deferred SERVFAIL is delivered on expiry.
 	sick := newFakeResolver(t, func(query []byte) []byte {
-		return dnsAnswer(query, rcodeServFail)
+		return dnsAnswer(query, byte(dnsmessage.RCodeServerFailure))
 	})
 	silent2, _ := newSilentResolver(t)
-	client2 := startTestUDPHandler(t, []string{sick, silent2}, func(h *udpHandler, _ *stubPacketHandler) {
+	client2 := startTestUDPHandler(t, []string{sick, silent2}, func(h *udpHandler, _ *dnsHandler) {
 		h.pending.attemptTimeout = 40 * time.Millisecond
 		h.sweepInterval = 10 * time.Millisecond
 	})
@@ -260,7 +166,7 @@ func TestUDPHandlerFailoverOnSweepTimeoutAndDeferredDelivery(t *testing.T) {
 	if gotID := binary.BigEndian.Uint16(got2[0:2]); gotID != 0x8888 {
 		t.Errorf("deferred response ID = %#x, want 0x8888", gotID)
 	}
-	if rcode := got2[3] & 0x0f; rcode != rcodeServFail {
-		t.Errorf("deferred rcode = %d, want %d", rcode, rcodeServFail)
+	if rcode := dnsmessage.RCode(got2[3] & 0x0f); rcode != dnsmessage.RCodeServerFailure {
+		t.Errorf("deferred rcode = %v, want %v", rcode, dnsmessage.RCodeServerFailure)
 	}
 }
