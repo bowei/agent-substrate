@@ -48,10 +48,7 @@ func startTestUDPHandler(t *testing.T, upstreams []string, configure func(*udpHa
 		udpAddrs[i] = addr
 	}
 
-	lim := &limiter{
-		inFlight:    make(chan struct{}, maxInFlightDNS),
-		connections: make(chan struct{}, maxDNSConnections),
-	}
+	lim := newLimiter()
 	pending := newPendingRequests(lim)
 	dnsH := newDNSHandler(pending, lim, nil)
 	h := newUDPHandler(ingress, egress, udpAddrs, dnsH, pending)

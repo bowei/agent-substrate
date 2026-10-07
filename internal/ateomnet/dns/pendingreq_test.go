@@ -33,13 +33,6 @@ var exampleQuestion = dnsmessage.Question{
 	Class: dnsmessage.ClassINET,
 }
 
-func newTestLimiter() *limiter {
-	return &limiter{
-		inFlight:    make(chan struct{}, maxInFlightDNS),
-		connections: make(chan struct{}, maxDNSConnections),
-	}
-}
-
 // recordQuery records dnsQuery(clientID) holding an in-flight slot, as a
 // forwarded query does, and returns its upstream ID and the rewritten query.
 func recordQuery(t *testing.T, p *pendingRequests, clientID uint16, client any, upstreams []string) (uint16, []byte) {
@@ -132,7 +125,7 @@ func TestPendingRequestsTimeoutForAttempt(t *testing.T) {
 }
 
 func TestPendingRequestsRecord(t *testing.T) {
-	lim := newTestLimiter()
+	lim := newLimiter()
 	p := newPendingRequests(lim)
 	client := &net.UDPAddr{IP: net.ParseIP("169.254.0.2"), Port: 54321}
 	// Responses are matched on their unmapped source address, so the key must
@@ -204,7 +197,7 @@ func TestPendingRequestsRecordRejects(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			lim := newTestLimiter()
+			lim := newLimiter()
 			p := newPendingRequests(lim)
 			lim.inFlight <- struct{}{} // held by another query
 			if tc.hasSlot {
@@ -226,7 +219,7 @@ func TestPendingRequestsRecordRejects(t *testing.T) {
 // Responses are matched by upstream ID, so record must not hand out one still
 // in flight.
 func TestPendingRequestsRecordAllocatesFreeID(t *testing.T) {
-	lim := newTestLimiter()
+	lim := newLimiter()
 	p := newPendingRequests(lim)
 	upstreams := []string{"10.96.0.10:53"}
 	const free = 0xabcd
@@ -251,7 +244,7 @@ func TestPendingRequestsRecordAllocatesFreeID(t *testing.T) {
 }
 
 func TestPendingRequestsDeleteEntryReleasesSlotOnce(t *testing.T) {
-	lim := newTestLimiter()
+	lim := newLimiter()
 	p := newPendingRequests(lim)
 	upstreams := []string{"10.96.0.10:53"}
 	lim.inFlight <- struct{}{} // held by another query
@@ -273,7 +266,7 @@ func TestPendingRequestsDeleteEntryReleasesSlotOnce(t *testing.T) {
 }
 
 func TestPendingRequestsFailOverOnSendError(t *testing.T) {
-	lim := newTestLimiter()
+	lim := newLimiter()
 	p := newPendingRequests(lim)
 	upstreams := []string{"10.96.0.10:53", "10.96.0.11:53"}
 	id, raw := recordQuery(t, p, 0x1234, nil, upstreams)
@@ -329,7 +322,7 @@ func TestPendingRequestsFailOverOnSendError(t *testing.T) {
 }
 
 func TestPendingRequestsByClientSource(t *testing.T) {
-	lim := newTestLimiter()
+	lim := newLimiter()
 	p := newPendingRequests(lim)
 	upstreams := []string{"10.96.0.10:53"}
 	clientA := &net.UDPAddr{IP: net.ParseIP("169.254.0.2"), Port: 1111}
@@ -361,7 +354,7 @@ func TestPendingRequestsByClientSource(t *testing.T) {
 }
 
 func TestPendingRequestsClearAll(t *testing.T) {
-	lim := newTestLimiter()
+	lim := newLimiter()
 	p := newPendingRequests(lim)
 	upstreams := []string{"10.96.0.10:53", "10.96.0.11:53"}
 	for i := range 3 {
@@ -378,7 +371,7 @@ func TestPendingRequestsClearAll(t *testing.T) {
 }
 
 func TestPendingRequestsSweep(t *testing.T) {
-	lim := newTestLimiter()
+	lim := newLimiter()
 	p := newPendingRequests(lim)
 	upstreams := []string{"10.96.0.10:53", "10.96.0.11:53"}
 	id, raw := recordQuery(t, p, 0x1234, nil, upstreams)
@@ -421,7 +414,7 @@ func TestPendingRequestsSweep(t *testing.T) {
 // A SERVFAIL beats a timeout: when the last upstream never answers, the client
 // gets the SERVFAIL held back from an earlier one.
 func TestPendingRequestsSweepDeliversDeferredAnswer(t *testing.T) {
-	lim := newTestLimiter()
+	lim := newLimiter()
 	p := newPendingRequests(lim)
 	client := &net.UDPAddr{IP: net.ParseIP("169.254.0.2"), Port: 54321}
 	upstreams := []string{"10.96.0.10:53", "10.96.0.11:53"}

@@ -32,10 +32,7 @@ func startTestTCPHandler(t *testing.T, upstreams []string, configure func(*tcpHa
 		t.Fatal(err)
 	}
 
-	lim := &limiter{
-		inFlight:    make(chan struct{}, maxInFlightDNS),
-		connections: make(chan struct{}, maxDNSConnections),
-	}
+	lim := newLimiter()
 	pending := newPendingRequests(lim)
 	dnsH := newDNSHandler(pending, lim, nil)
 	h := newTCPHandler(lis, net.Dialer{Timeout: 5 * time.Second}, upstreams, dnsH, pending, lim)

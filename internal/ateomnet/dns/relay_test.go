@@ -292,7 +292,7 @@ func TestRelayDropsQueriesBeyondItsInFlightLimit(t *testing.T) {
 	}
 	client := serveRelayUDP(t, relay)
 
-	for i := range maxInFlightDNS * 4 {
+	for i := range maxInFlight * 4 {
 		if _, err := client.Write(dnsQuery(uint16(i))); err != nil {
 			t.Fatal(err)
 		}
@@ -308,8 +308,8 @@ func TestRelayDropsQueriesBeyondItsInFlightLimit(t *testing.T) {
 			last = n
 		}
 	}
-	if got := inFlight.Load(); got > maxInFlightDNS {
-		t.Errorf("the relay had %d queries in flight, want at most %d", got, maxInFlightDNS)
+	if got := inFlight.Load(); got > maxInFlight {
+		t.Errorf("the relay had %d queries in flight, want at most %d", got, maxInFlight)
 	}
 }
 
@@ -369,14 +369,14 @@ func TestRelayRefusesTCPConnectionsBeyondItsLimit(t *testing.T) {
 	}
 	_, _, relayAddr := serveLoopback(t, relay)
 
-	for range maxDNSConnections {
+	for range maxConnections {
 		conn, err := net.Dial("tcp", relayAddr.String())
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { conn.Close() })
 	}
-	waitFor(t, "the relay to fill up", func() bool { return held.Load() == maxDNSConnections })
+	waitFor(t, "the relay to fill up", func() bool { return held.Load() == maxConnections })
 
 	// The relay should close a connection accepted beyond its limit.
 	extra, err := net.Dial("tcp", relayAddr.String())
@@ -390,8 +390,8 @@ func TestRelayRefusesTCPConnectionsBeyondItsLimit(t *testing.T) {
 	if _, err := extra.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Errorf("reading the refused connection = %v, want %v", err, io.EOF)
 	}
-	if got := held.Load(); got != maxDNSConnections {
-		t.Errorf("the relay holds %d upstream connections, want %d", got, maxDNSConnections)
+	if got := held.Load(); got != maxConnections {
+		t.Errorf("the relay holds %d upstream connections, want %d", got, maxConnections)
 	}
 }
 
@@ -483,16 +483,16 @@ func TestRelayLimitsArePerActor(t *testing.T) {
 	srvB, _, addrB := serveLoopback(t, relay)
 
 	// Saturate Actor A's TCP connection limit.
-	for range maxDNSConnections {
+	for range maxConnections {
 		conn, err := net.Dial("tcp", addrA.String())
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { conn.Close() })
 	}
-	waitFor(t, "actor A to fill up", func() bool { return held.Load() == maxDNSConnections })
-	if got := len(srvA.limiter.connections); got != maxDNSConnections {
-		t.Fatalf("actor A connection slots = %d, want %d", got, maxDNSConnections)
+	waitFor(t, "actor A to fill up", func() bool { return held.Load() == maxConnections })
+	if got := len(srvA.limiter.connections); got != maxConnections {
+		t.Fatalf("actor A connection slots = %d, want %d", got, maxConnections)
 	}
 	if got := len(srvB.limiter.connections); got != 0 {
 		t.Fatalf("actor B connection slots = %d, want 0", got)
@@ -504,7 +504,7 @@ func TestRelayLimitsArePerActor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer connB.Close()
-	waitFor(t, "actor B connection to reach upstream", func() bool { return held.Load() == maxDNSConnections+1 })
+	waitFor(t, "actor B connection to reach upstream", func() bool { return held.Load() == maxConnections+1 })
 	if got := len(srvB.limiter.connections); got != 1 {
 		t.Errorf("actor B connection slots = %d, want 1", got)
 	}

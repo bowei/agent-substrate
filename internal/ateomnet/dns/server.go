@@ -35,17 +35,11 @@ type netConn struct {
 	tcpListener net.Listener
 }
 
-// limiter caps DNS queries in flight and open TCP connections for one sandbox.
-type limiter struct {
-	inFlight    chan struct{}
-	connections chan struct{}
-}
-
 // Server is one sandbox's running DNS relay, returned by [Relay.Serve].
 type Server struct {
 	n *netConn
 
-	limiter         limiter
+	limiter         *limiter
 	pendingRequests *pendingRequests
 	dns             *dnsHandler
 	udp             *udpHandler
@@ -85,15 +79,12 @@ func newServer(
 	s := &Server{
 		stopServing: stopServing,
 		n:           netC,
-		limiter: limiter{
-			inFlight:    make(chan struct{}, maxInFlightDNS),
-			connections: make(chan struct{}, maxDNSConnections),
-		},
+		limiter:     newLimiter(),
 	}
-	s.pendingRequests = newPendingRequests(&s.limiter)
-	s.dns = newDNSHandler(s.pendingRequests, &s.limiter, nil)
+	s.pendingRequests = newPendingRequests(s.limiter)
+	s.dns = newDNSHandler(s.pendingRequests, s.limiter, nil)
 	s.udp = newUDPHandler(netC.udp, netC.egressUDP, udpAddrs, s.dns, s.pendingRequests)
-	s.tcp = newTCPHandler(netC.tcpListener, netC.dialer, config.upstreams, s.dns, s.pendingRequests, &s.limiter)
+	s.tcp = newTCPHandler(netC.tcpListener, netC.dialer, config.upstreams, s.dns, s.pendingRequests, s.limiter)
 
 	s.serving.Add(2)
 	go func() {

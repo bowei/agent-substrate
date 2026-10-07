@@ -72,8 +72,8 @@ func TestDNSHandlerOnRequestDrop(t *testing.T) {
 
 func TestDNSHandlerOnRequestSynthesizedReplies(t *testing.T) {
 	lim := &limiter{
-		inFlight:    make(chan struct{}, maxInFlightDNS),
-		connections: make(chan struct{}, maxDNSConnections),
+		inFlight:    make(chan struct{}, maxInFlight),
+		connections: make(chan struct{}, maxConnections),
 	}
 	pending := newPendingRequests(lim)
 	allow := func(q dnsmessage.Question) bool {
@@ -206,8 +206,8 @@ func TestDNSHandlerOnRequestSynthesizedReplies(t *testing.T) {
 
 func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 	lim := &limiter{
-		inFlight:    make(chan struct{}, maxInFlightDNS),
-		connections: make(chan struct{}, maxDNSConnections),
+		inFlight:    make(chan struct{}, maxInFlight),
+		connections: make(chan struct{}, maxConnections),
 	}
 	pending := newPendingRequests(lim)
 	h := newDNSHandler(pending, lim, nil)
