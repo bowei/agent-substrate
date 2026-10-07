@@ -144,7 +144,7 @@ func newFakeResolver(t *testing.T, respond func([]byte) []byte) string {
 	}
 	t.Cleanup(func() { pc.Close() })
 	go func() {
-		buf := make([]byte, maxDNSDatagram)
+		buf := make([]byte, maxDatagramSize)
 		for {
 			n, from, err := pc.ReadFrom(buf)
 			if err != nil {
@@ -169,7 +169,7 @@ func newSilentResolver(t *testing.T) (address string, asked <-chan struct{}) {
 	t.Cleanup(func() { pc.Close() })
 	seen := make(chan struct{}, 1)
 	go func() {
-		buf := make([]byte, maxDNSDatagram)
+		buf := make([]byte, maxDatagramSize)
 		for {
 			if _, _, err := pc.ReadFrom(buf); err != nil {
 				return
@@ -221,7 +221,7 @@ func readWithin(t *testing.T, conn net.Conn) []byte {
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	buf := make([]byte, maxDNSDatagram)
+	buf := make([]byte, maxDatagramSize)
 	n, err := conn.Read(buf)
 	if err != nil {
 		t.Fatalf("reading the relay's answer: %v", err)
@@ -271,7 +271,7 @@ func TestRelayDropsQueriesBeyondItsInFlightLimit(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	var inFlight atomic.Int64
 	go func() {
-		buf := make([]byte, maxDNSDatagram)
+		buf := make([]byte, maxDatagramSize)
 		for {
 			n, from, err := pc.ReadFrom(buf)
 			if err != nil {

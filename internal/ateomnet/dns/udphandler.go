@@ -30,16 +30,24 @@ const (
 	// defaultSweepInterval is how often pendingRequests is checked for expired
 	// UDP queries.
 	defaultSweepInterval = 50 * time.Millisecond
-
 	// defaultUpstreamAttemptTimeout bounds a single UDP upstream attempt
 	// when fallback upstreams remain.
 	defaultUpstreamAttemptTimeout = 1 * time.Second
+	// maxDatagramSize that we accept. Raising this consumes more memory while
+	// processing packets.
+	//
+	// References:
+	// - 4096: https://www.rfc-editor.org/info/rfc6891/#section-6.2.5
+	// - 1232: CoreDNS default, https://www.dnsflagday.net/2020/#dns-flag-day-2020
+	maxDatagramSize = 4 * 1024
 )
 
 // udpHandler manages actor UDP DNS traffic using an actorSock from
 // the ACtor and upstreamSock out to the upstream DNS server.
 type udpHandler struct {
-	actorSock    net.PacketConn
+	// actorSock that receives DNS requests from the Actor.
+	actorSock net.PacketConn
+	// upstreamSock for the outbound DNS requests.
 	upstreamSock net.PacketConn
 
 	upstreams    []*net.UDPAddr
@@ -109,7 +117,7 @@ func (h *udpHandler) serve(ctx context.Context) error {
 }
 
 func (h *udpHandler) readFromActor(ctx context.Context) error {
-	buf := make([]byte, maxDNSDatagram)
+	buf := make([]byte, maxDatagramSize)
 	for {
 		n, from, err := h.actorSock.ReadFrom(buf)
 		if err != nil {
@@ -158,7 +166,7 @@ func (h *udpHandler) sendToUpstream(ctx context.Context, upstreamID uint16, idx 
 }
 
 func (h *udpHandler) readFromUpstream(ctx context.Context) error {
-	buf := make([]byte, maxDNSDatagram)
+	buf := make([]byte, maxDatagramSize)
 	for {
 		n, from, err := h.upstreamSock.ReadFrom(buf)
 		if err != nil {

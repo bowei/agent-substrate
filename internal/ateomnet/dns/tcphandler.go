@@ -27,6 +27,11 @@ import (
 	"time"
 )
 
+const (
+	// defaultConnectionTimeout limits connection lifetime, including idle clients.
+	defaultConnectionTimeout = 30 * time.Second
+)
+
 // tcpClientConn wraps a downstream actor TCP connection with a mutex to
 // serialize concurrent frame writes from replies and out-of-order
 // upstream responses.
@@ -39,32 +44,33 @@ type tcpClientConn struct {
 // tcpHandler accepts actor TCP DNS connections and relays length-prefixed DNS
 // frames with pipelining and out-of-order response support.
 type tcpHandler struct {
-	listener  net.Listener
-	dialer    net.Dialer
 	upstreams []string
-	dns       *dnsHandler
-	pending   *pendingRequests
-	limiter   *limiter
+
+	listener net.Listener
+	dialer   net.Dialer
+	dns      *dnsHandler
+	pending  *pendingRequests
+	limiter  *limiter
 
 	tcpTimeout time.Duration
 }
 
 func newTCPHandler(
+	upstreams []string,
 	listener net.Listener,
 	dialer net.Dialer,
-	upstreams []string,
 	dns *dnsHandler,
 	pending *pendingRequests,
 	lim *limiter,
 ) *tcpHandler {
 	return &tcpHandler{
+		upstreams:  upstreams,
 		listener:   listener,
 		dialer:     dialer,
-		upstreams:  upstreams,
 		dns:        dns,
 		pending:    pending,
 		limiter:    lim,
-		tcpTimeout: dnsTCPTimeout,
+		tcpTimeout: defaultConnectionTimeout,
 	}
 }
 
@@ -124,11 +130,7 @@ func (h *tcpHandler) handleConn(ctx context.Context, downstream net.Conn) {
 	})
 	defer stop()
 
-	tcpTimeout := h.tcpTimeout
-	if tcpTimeout <= 0 {
-		tcpTimeout = dnsTCPTimeout
-	}
-	deadline := time.Now().Add(tcpTimeout)
+	deadline := time.Now().Add(h.tcpTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}

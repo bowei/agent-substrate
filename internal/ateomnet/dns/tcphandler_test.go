@@ -35,7 +35,7 @@ func startTestTCPHandler(t *testing.T, upstreams []string, configure func(*tcpHa
 	lim := newLimiter()
 	pending := newPendingRequests(lim)
 	dnsH := newDNSHandler(pending, lim, nil)
-	h := newTCPHandler(lis, net.Dialer{Timeout: 5 * time.Second}, upstreams, dnsH, pending, lim)
+	h := newTCPHandler(upstreams, lis, net.Dialer{Timeout: 5 * time.Second}, dnsH, pending, lim)
 	if configure != nil {
 		configure(h, dnsH)
 	}

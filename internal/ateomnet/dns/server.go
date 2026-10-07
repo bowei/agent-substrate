@@ -81,10 +81,11 @@ func newServer(
 		n:           netC,
 		limiter:     newLimiter(),
 	}
+
 	s.pendingRequests = newPendingRequests(s.limiter)
 	s.dns = newDNSHandler(s.pendingRequests, s.limiter, nil)
 	s.udp = newUDPHandler(netC.udp, netC.egressUDP, udpAddrs, s.dns, s.pendingRequests)
-	s.tcp = newTCPHandler(netC.tcpListener, netC.dialer, config.upstreams, s.dns, s.pendingRequests, s.limiter)
+	s.tcp = newTCPHandler(config.upstreams, netC.tcpListener, netC.dialer, s.dns, s.pendingRequests, s.limiter)
 
 	s.serving.Add(2)
 	go func() {
