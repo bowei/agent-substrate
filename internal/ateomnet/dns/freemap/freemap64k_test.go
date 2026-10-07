@@ -260,6 +260,16 @@ func TestMap64k_FindFirstUnsetFrom_Levels(t *testing.T) {
 		if got := m.FindFirstUnsetFrom(4096); got != 4100 {
 			t.Errorf("got %d, want 4100", got)
 		}
+
+		// Fill the rest of L1 word 1 (bits 4100..8191) and bits 8192..8199 in L1 word 2
+		for i := uint16(4100); i < 8200; i++ {
+			m.Set(i)
+		}
+		for _, start := range []uint16{0, 4095, 4096, 8191, 8192} {
+			if got := m.FindFirstUnsetFrom(start); got != 8200 {
+				t.Errorf("start %d: got %d, want 8200", start, got)
+			}
+		}
 	})
 
 	t.Run("wrap around", func(t *testing.T) {
@@ -360,6 +370,22 @@ func TestMap64k_FindFirstUnsetRange(t *testing.T) {
 func TestMap64k_Differential(t *testing.T) {
 	var m Map64k
 	occupied := make([]bool, numBits)
+	var wantCount uint
+
+	setBit := func(idx uint16) {
+		if !occupied[idx] {
+			occupied[idx] = true
+			wantCount++
+		}
+		m.Set(idx)
+	}
+	clearBit := func(idx uint16) {
+		if occupied[idx] {
+			occupied[idx] = false
+			wantCount--
+		}
+		m.Clear(idx)
+	}
 
 	naiveFindFirstUnsetRange := func(start uint16, end int) int {
 		for idx := int(start); idx < end; idx++ {
@@ -380,17 +406,41 @@ func TestMap64k_Differential(t *testing.T) {
 	r := rand.New(rand.NewPCG(42, 1337))
 
 	for step := range 5000 {
-		op := r.IntN(10)
+		op := r.IntN(12)
 		switch {
-		case op < 4: // Set a random bit
+		case op < 3: // Set a random bit
 			idx := uint16(r.IntN(numBits))
-			m.Set(idx)
-			occupied[idx] = true
-		case op < 6: // Clear a random bit
+			setBit(idx)
+			if !m.Get(idx) {
+				t.Fatalf("step %d: Get(%d) = false after Set", step, idx)
+			}
+		case op < 5: // Clear a random bit
 			idx := uint16(r.IntN(numBits))
-			m.Clear(idx)
-			occupied[idx] = false
-		case op < 8: // Query range
+			clearBit(idx)
+			if m.Get(idx) {
+				t.Fatalf("step %d: Get(%d) = true after Clear", step, idx)
+			}
+		case op == 5: // Set an entire 64-bit L0 word
+			base := uint16(r.IntN(l0words) * wordSize)
+			for i := range uint16(wordSize) {
+				setBit(base + i)
+			}
+		case op == 6: // Clear an entire 64-bit L0 word
+			base := uint16(r.IntN(l0words) * wordSize)
+			for i := range uint16(wordSize) {
+				clearBit(base + i)
+			}
+		case op == 7: // Set or clear an entire 4096-bit L1 block
+			base := uint16(r.IntN(l1words) * wordSize * wordSize)
+			fill := r.IntN(2) == 0
+			for i := range uint16(wordSize * wordSize) {
+				if fill {
+					setBit(base + i)
+				} else {
+					clearBit(base + i)
+				}
+			}
+		case op < 10: // Query range
 			start := uint16(r.IntN(numBits))
 			end := int(start) + r.IntN(numBits-int(start)+1)
 			expected := naiveFindFirstUnsetRange(start, end)
@@ -406,12 +456,32 @@ func TestMap64k_Differential(t *testing.T) {
 				t.Fatalf("step %d: FindFirstUnsetFrom(%d) = %d, want %d", step, start, got, expected)
 			}
 		}
+
+		if got := m.Count(); got != wantCount {
+			t.Fatalf("step %d: Count() = %d, want %d", step, got, wantCount)
+		}
 	}
 }
 
 func TestMap64k_Differential_Dense(t *testing.T) {
 	var m Map64k
 	occupied := make([]bool, numBits)
+	var wantCount uint
+
+	setBit := func(idx uint16) {
+		if !occupied[idx] {
+			occupied[idx] = true
+			wantCount++
+		}
+		m.Set(idx)
+	}
+	clearBit := func(idx uint16) {
+		if occupied[idx] {
+			occupied[idx] = false
+			wantCount--
+		}
+		m.Clear(idx)
+	}
 
 	naiveFindFirstUnsetRange := func(start uint16, end int) int {
 		for idx := int(start); idx < end; idx++ {
@@ -431,25 +501,34 @@ func TestMap64k_Differential_Dense(t *testing.T) {
 
 	r := rand.New(rand.NewPCG(99, 12345))
 
-	// Pre-fill ~95% of bits
-	for range 62000 {
+	// Start completely full so all L1 and L2 summary bits are set, then punch a few holes.
+	for i := range numBits {
+		setBit(uint16(i))
+	}
+	var holes []uint16
+	for range 16 {
 		idx := uint16(r.IntN(numBits))
-		m.Set(idx)
-		occupied[idx] = true
+		clearBit(idx)
+		holes = append(holes, idx)
 	}
 
 	for step := range 5000 {
 		op := r.IntN(10)
 		switch {
-		case op < 3:
+		case op < 3: // Plug an existing hole (or random bit) so L0/L1/L2 words become full again
+			if len(holes) > 0 {
+				hIdx := r.IntN(len(holes))
+				setBit(holes[hIdx])
+				holes[hIdx] = holes[len(holes)-1]
+				holes = holes[:len(holes)-1]
+			} else {
+				setBit(uint16(r.IntN(numBits)))
+			}
+		case op < 5: // Punch a new hole
 			idx := uint16(r.IntN(numBits))
-			m.Set(idx)
-			occupied[idx] = true
-		case op < 5:
-			idx := uint16(r.IntN(numBits))
-			m.Clear(idx)
-			occupied[idx] = false
-		case op < 7:
+			clearBit(idx)
+			holes = append(holes, idx)
+		case op < 7: // Query range
 			start := uint16(r.IntN(numBits))
 			end := int(start) + r.IntN(numBits-int(start)+1)
 			expected := naiveFindFirstUnsetRange(start, end)
@@ -457,40 +536,78 @@ func TestMap64k_Differential_Dense(t *testing.T) {
 			if got != expected {
 				t.Fatalf("dense step %d: findFirstUnsetRange(%d, %d) = %d, want %d", step, start, end, got, expected)
 			}
-		default:
+		default: // Query from and FindFirstUnset
 			start := uint16(r.IntN(numBits))
 			expected := naiveFindFirstUnsetFrom(start)
 			got := m.FindFirstUnsetFrom(start)
 			if got != expected {
 				t.Fatalf("dense step %d: FindFirstUnsetFrom(%d) = %d, want %d", step, start, got, expected)
 			}
+			if gotFirst, wantFirst := m.FindFirstUnset(), naiveFindFirstUnsetRange(0, numBits); gotFirst != wantFirst {
+				t.Fatalf("dense step %d: FindFirstUnset() = %d, want %d", step, gotFirst, wantFirst)
+			}
+		}
+
+		if got := m.Count(); got != wantCount {
+			t.Fatalf("dense step %d: Count() = %d, want %d", step, got, wantCount)
 		}
 	}
 }
 
 func BenchmarkFindFirstUnsetFrom(b *testing.B) {
-	var m Map64k
-	r := rand.New(rand.NewPCG(1, 2))
-	for range 30000 {
-		m.Set(uint16(r.IntN(numBits)))
-	}
+	b.Run("sparse", func(b *testing.B) {
+		var m Map64k
+		r := rand.New(rand.NewPCG(1, 2))
+		for range 30000 {
+			m.Set(uint16(r.IntN(numBits)))
+		}
 
-	b.ResetTimer()
-	for i := range b.N {
-		m.FindFirstUnsetFrom(uint16(i % numBits))
-	}
+		b.ResetTimer()
+		for i := range b.N {
+			m.FindFirstUnsetFrom(uint16(i % numBits))
+		}
+	})
+
+	b.Run("dense_single_hole", func(b *testing.B) {
+		var m Map64k
+		for i := range numBits {
+			m.Set(uint16(i))
+		}
+		m.Clear(50000)
+
+		b.ResetTimer()
+		for i := range b.N {
+			m.FindFirstUnsetFrom(uint16(i % numBits))
+		}
+	})
 }
 
 func BenchmarkFindFirstUnsetRange(b *testing.B) {
-	var m Map64k
-	r := rand.New(rand.NewPCG(1, 2))
-	for range 30000 {
-		m.Set(uint16(r.IntN(numBits)))
-	}
+	b.Run("sparse", func(b *testing.B) {
+		var m Map64k
+		r := rand.New(rand.NewPCG(1, 2))
+		for range 30000 {
+			m.Set(uint16(r.IntN(numBits)))
+		}
 
-	b.ResetTimer()
-	for i := range b.N {
-		start := uint16(i % (numBits - 100))
-		m.findFirstUnsetRange(start, int(start)+100)
-	}
+		b.ResetTimer()
+		for i := range b.N {
+			start := uint16(i % (numBits - 100))
+			m.findFirstUnsetRange(start, int(start)+100)
+		}
+	})
+
+	b.Run("dense_single_hole", func(b *testing.B) {
+		var m Map64k
+		for i := range numBits {
+			m.Set(uint16(i))
+		}
+		m.Clear(50000)
+
+		b.ResetTimer()
+		for i := range b.N {
+			start := uint16(i % (numBits - 100))
+			m.findFirstUnsetRange(start, numBits)
+		}
+	})
 }

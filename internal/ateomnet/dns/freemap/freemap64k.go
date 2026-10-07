@@ -23,6 +23,7 @@ const (
 	wordSize = 64
 	l0words  = numBits / wordSize // 1024 words
 	l1words  = l0words / wordSize // 16 words
+	l2Mask   = (1 << l1words) - 1 // 0xFFFF
 )
 
 // Map64k is a free map that supports 64k entries. This data structure
@@ -45,6 +46,9 @@ type Map64k struct {
 // Count returns the number of bits set in the map.
 func (hb *Map64k) Count() uint { return hb.count }
 
+// IsFull returns true if there is no more room in the map.
+func (hb *Map64k) IsFull() bool { return hb.count == numBits }
+
 // bitsetIndex into the hierarchical bitset.
 type bitsetIndex struct {
 	l0, l0Bit int
@@ -61,7 +65,7 @@ func getIndex(index uint16) bitsetIndex {
 	}
 }
 
-// Get return true if the index is Set.
+// Get returns true if the index is set.
 func (hb *Map64k) Get(index uint16) bool {
 	sidx := getIndex(index)
 	return hb.l0[sidx.l0]&(1<<sidx.l0Bit) != 0
@@ -115,7 +119,14 @@ func (hb *Map64k) Clear(index uint16) {
 // FindFirstUnset returns the index of the first empty (0) bit.
 //
 // Returns -1 if the entire 64k bitset is completely occupied.
-func (hb *Map64k) FindFirstUnset() int { return hb.findFirstUnsetRange(0, numBits) }
+func (hb *Map64k) FindFirstUnset() int {
+	if (hb.l2 & l2Mask) == l2Mask {
+		return -1
+	}
+	targetL1 := bits.TrailingZeros64(^hb.l2)
+	targetL0 := (targetL1 * wordSize) + bits.TrailingZeros64(^hb.l1[targetL1])
+	return (targetL0 * wordSize) + bits.TrailingZeros64(^hb.l0[targetL0])
+}
 
 // FindFirstUnsetFrom returns the index of the first empty (0) bit, starting
 // search from `index`. Search will wrap around the end of the ID space.
@@ -123,16 +134,12 @@ func (hb *Map64k) FindFirstUnset() int { return hb.findFirstUnsetRange(0, numBit
 // Returns -1 if the entire 64k bitset is completely occupied.
 func (hb *Map64k) FindFirstUnsetFrom(index uint16) int {
 	// Search from index to the end.
-	idx := hb.findFirstUnsetRange(index, numBits)
-	if idx != -1 {
+	if idx := hb.findFirstUnsetRange(index, numBits); idx != -1 {
 		return idx
 	}
-	// Wrap around to search from 0 to index.
-	idx = hb.findFirstUnsetRange(0, int(index))
-	if idx != -1 {
-		return idx
-	}
-	return -1
+	// Wrap around: since [index, numBits) is completely occupied, any free
+	// bit in the map must be in [0, index).
+	return hb.FindFirstUnset()
 }
 
 // findFirstUnsetRange searches for the first empty (0) bit in the range [start, end).
@@ -144,7 +151,7 @@ func (hb *Map64k) findFirstUnsetRange(start uint16, end int) int {
 	}
 
 	// 1. Check if the entire map is occupied.
-	if (hb.l2 & 0xFFFF) == 0xFFFF {
+	if (hb.l2 & l2Mask) == l2Mask {
 		return -1
 	}
 
@@ -161,36 +168,31 @@ func (hb *Map64k) findFirstUnsetRange(start uint16, end int) int {
 	}
 
 	// 3. Scan remaining Layer 0 words in the current Layer 1 word.
-	nextL0Word := startIdx.l0 + 1
-	if nextL0Word < l0words && nextL0Word*wordSize < end {
-		l1Word := nextL0Word / wordSize
-		l1Bit := nextL0Word % wordSize
-
-		w1 := hb.l1[l1Word] | ((uint64(1) << l1Bit) - 1)
+	if nextL1Bit := startIdx.l1Bit + 1; nextL1Bit < wordSize && (startIdx.l0+1)*wordSize < end {
+		w1 := hb.l1[startIdx.l1] | ((uint64(1) << nextL1Bit) - 1)
 		if inv1 := ^w1; inv1 != 0 {
 			l0WordInL1 := bits.TrailingZeros64(inv1)
-			targetL0 := (l1Word * wordSize) + l0WordInL1
+			targetL0 := (startIdx.l1 * wordSize) + l0WordInL1
 			idx := (targetL0 * wordSize) + bits.TrailingZeros64(^hb.l0[targetL0])
 			if idx < end {
 				return idx
 			}
 			return -1
 		}
+	}
 
-		// 4. Scan remaining Layer 1 words in Layer 2 (Root).
-		nextL1Word := l1Word + 1
-		if nextL1Word < l1words && nextL1Word*wordSize*wordSize < end {
-			w2 := hb.l2 | ((uint64(1) << nextL1Word) - 1)
-			if inv2 := (^w2) & 0xFFFF; inv2 != 0 {
-				targetL1 := bits.TrailingZeros64(inv2)
-				l0WordInL1 := bits.TrailingZeros64(^hb.l1[targetL1])
-				targetL0 := (targetL1 * wordSize) + l0WordInL1
-				idx := (targetL0 * wordSize) + bits.TrailingZeros64(^hb.l0[targetL0])
-				if idx < end {
-					return idx
-				}
-				return -1
+	// 4. Scan remaining Layer 1 words in Layer 2 (Root).
+	if nextL1 := startIdx.l1 + 1; nextL1 < l1words && nextL1*wordSize*wordSize < end {
+		w2 := hb.l2 | ((uint64(1) << nextL1) - 1)
+		if inv2 := (^w2) & l2Mask; inv2 != 0 {
+			targetL1 := bits.TrailingZeros64(inv2)
+			l0WordInL1 := bits.TrailingZeros64(^hb.l1[targetL1])
+			targetL0 := (targetL1 * wordSize) + l0WordInL1
+			idx := (targetL0 * wordSize) + bits.TrailingZeros64(^hb.l0[targetL0])
+			if idx < end {
+				return idx
 			}
+			return -1
 		}
 	}
 

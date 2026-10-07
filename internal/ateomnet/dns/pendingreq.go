@@ -104,8 +104,7 @@ func (p *pendingRequests) record(
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	/// XXXXX replace with more efficient methods.
-	if p.inUse.Count() >= 65536 {
+	if p.inUse.IsFull() {
 		if hasSlot {
 			p.limiter.inFlight.release()
 		}
@@ -114,14 +113,16 @@ func (p *pendingRequests) record(
 
 	start := uint16(rand.Uint32())
 	var upstreamID uint16
-	for i := range 65536 {
-		candidate := start + uint16(i)
-		if !p.inUse.Get(int(candidate)) {
-			upstreamID = candidate
-			break
+
+	if candidate := p.inUse.FindFirstUnsetFrom(start); candidate == -1 {
+		if hasSlot {
+			p.limiter.inFlight.release()
 		}
+		return 0, false
+
+	} else {
+		upstreamID = uint16(candidate)
 	}
-	// XXXXX
 
 	binary.BigEndian.PutUint16(raw[0:2], upstreamID)
 	source := normalizeAddrString(upstreams[0])
@@ -129,7 +130,7 @@ func (p *pendingRequests) record(
 		upstreamID:      upstreamID,
 		transportSource: source,
 	}
-	p.inUse.Set(int(upstreamID))
+	p.inUse.Set(uint16(upstreamID))
 	p.entries[key] = &pendingRequest{
 		clientRequestID: clientReqID,
 		clientSource:    clientSource,
@@ -145,7 +146,7 @@ func (p *pendingRequests) record(
 
 func (p *pendingRequests) deleteEntryLocked(key pendingKey, entry *pendingRequest) {
 	delete(p.entries, key)
-	p.inUse.Clear(int(key.upstreamID))
+	p.inUse.Clear(key.upstreamID)
 	if entry.hasSlot && p.limiter != nil {
 		entry.hasSlot = false
 		p.limiter.inFlight.release()
