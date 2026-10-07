@@ -159,7 +159,7 @@ func TestPendingRequestsRecord(t *testing.T) {
 		t.Errorf("entry mismatch (-want +got):\n%s", diff)
 	}
 	checkExpiry(t, entry.expiry, before, after, p.timeoutForAttempt(0, len(upstreams)))
-	if _, ok := p.inUse[id]; !ok {
+	if !p.inUse.Get(id) {
 		t.Errorf("upstream ID %#x is not marked in use", id)
 	}
 	if got := lim.inFlight.occupied(); got != 1 {

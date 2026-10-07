@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agent-substrate/substrate/internal/ateomnet/dns/freemap"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -54,7 +55,7 @@ type pendingRequest struct {
 type pendingRequests struct {
 	mu      sync.Mutex
 	entries map[pendingKey]*pendingRequest
-	inUse   map[uint16]struct{}
+	inUse   freemap.Map64k
 	limiter *limiter
 
 	exchangeTimeout time.Duration
@@ -64,7 +65,6 @@ type pendingRequests struct {
 func newPendingRequests(lim *limiter) *pendingRequests {
 	return &pendingRequests{
 		entries:         make(map[pendingKey]*pendingRequest),
-		inUse:           make(map[uint16]struct{}),
 		limiter:         lim,
 		exchangeTimeout: dnsExchangeTimeout,
 	}
@@ -104,7 +104,8 @@ func (p *pendingRequests) record(
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if len(p.inUse) >= 65536 {
+	/// XXXXX replace with more efficient methods.
+	if p.inUse.Count() >= 65536 {
 		if hasSlot {
 			p.limiter.inFlight.release()
 		}
@@ -115,11 +116,12 @@ func (p *pendingRequests) record(
 	var upstreamID uint16
 	for i := range 65536 {
 		candidate := start + uint16(i)
-		if _, taken := p.inUse[candidate]; !taken {
+		if !p.inUse.Get(int(candidate)) {
 			upstreamID = candidate
 			break
 		}
 	}
+	// XXXXX
 
 	binary.BigEndian.PutUint16(raw[0:2], upstreamID)
 	source := normalizeAddrString(upstreams[0])
@@ -127,7 +129,7 @@ func (p *pendingRequests) record(
 		upstreamID:      upstreamID,
 		transportSource: source,
 	}
-	p.inUse[upstreamID] = struct{}{}
+	p.inUse.Set(int(upstreamID))
 	p.entries[key] = &pendingRequest{
 		clientRequestID: clientReqID,
 		clientSource:    clientSource,
@@ -143,7 +145,7 @@ func (p *pendingRequests) record(
 
 func (p *pendingRequests) deleteEntryLocked(key pendingKey, entry *pendingRequest) {
 	delete(p.entries, key)
-	delete(p.inUse, key.upstreamID)
+	p.inUse.Clear(int(key.upstreamID))
 	if entry.hasSlot && p.limiter != nil {
 		entry.hasSlot = false
 		p.limiter.inFlight.release()
