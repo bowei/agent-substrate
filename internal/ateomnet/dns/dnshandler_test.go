@@ -45,8 +45,8 @@ func buildTestMessage(t *testing.T, hdr dnsmessage.Header, questions []dnsmessag
 
 func TestDNSHandlerOnRequestDrop(t *testing.T) {
 	lim := &limiter{
-		inFlight:    make(chan struct{}, 1),
-		connections: make(chan struct{}, 1),
+		inFlight:    &limiterSlots{max: 1},
+		connections: &limiterSlots{max: 1},
 	}
 	pending := newPendingRequests(lim)
 	h := newDNSHandler(pending, lim, nil)
@@ -63,18 +63,15 @@ func TestDNSHandlerOnRequestDrop(t *testing.T) {
 	}
 
 	// 3. Rate-limited (inFlight full).
-	lim.inFlight <- struct{}{}
-	defer func() { <-lim.inFlight }()
+	lim.inFlight.tryAcquire()
+	defer lim.inFlight.release()
 	if act := h.onRequest(dnsQuery(0x1234)); act.kind != actionDrop {
 		t.Errorf("rate-limited packet action = %v, want actionDrop", act.kind)
 	}
 }
 
 func TestDNSHandlerOnRequestSynthesizedReplies(t *testing.T) {
-	lim := &limiter{
-		inFlight:    make(chan struct{}, maxInFlight),
-		connections: make(chan struct{}, maxConnections),
-	}
+	lim := newLimiter()
 	pending := newPendingRequests(lim)
 	allow := func(q dnsmessage.Question) bool {
 		return q.Name.String() != "blocked.example.com." && q.Type != dnsmessage.TypeTXT
@@ -197,18 +194,15 @@ func TestDNSHandlerOnRequestSynthesizedReplies(t *testing.T) {
 			if hdr.RCode != tc.wantRCode {
 				t.Errorf("reply RCode = %v, want %v", hdr.RCode, tc.wantRCode)
 			}
-			if len(lim.inFlight) != 0 {
-				t.Errorf("inFlight slots = %d after synthesized reply, want 0", len(lim.inFlight))
+			if got := lim.inFlight.occupied(); got != 0 {
+				t.Errorf("inFlight slots = %d after synthesized reply, want 0", got)
 			}
 		})
 	}
 }
 
 func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
-	lim := &limiter{
-		inFlight:    make(chan struct{}, maxInFlight),
-		connections: make(chan struct{}, maxConnections),
-	}
+	lim := newLimiter()
 	pending := newPendingRequests(lim)
 	h := newDNSHandler(pending, lim, nil)
 
@@ -297,8 +291,8 @@ func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 	if failoverAct.upstreamIdx != 1 {
 		t.Errorf("failover upstreamIdx = %d, want 1", failoverAct.upstreamIdx)
 	}
-	if len(lim.inFlight) != 1 {
-		t.Errorf("inFlight slots during failover = %d, want 1", len(lim.inFlight))
+	if got := lim.inFlight.occupied(); got != 1 {
+		t.Errorf("inFlight slots during failover = %d, want 1", got)
 	}
 
 	// 7. Valid response from upstream2 (with different QNAME casing) delivers and restores clientRequestID.
@@ -321,7 +315,7 @@ func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 	if deliverAct.clientSource != clientAddr {
 		t.Errorf("delivered clientSource = %v, want %v", deliverAct.clientSource, clientAddr)
 	}
-	if len(lim.inFlight) != 0 {
-		t.Errorf("inFlight slots after delivery = %d, want 0", len(lim.inFlight))
+	if got := lim.inFlight.occupied(); got != 0 {
+		t.Errorf("inFlight slots after delivery = %d, want 0", got)
 	}
 }

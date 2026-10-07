@@ -162,7 +162,7 @@ func TestPendingRequestsRecord(t *testing.T) {
 	if _, ok := p.inUse[id]; !ok {
 		t.Errorf("upstream ID %#x is not marked in use", id)
 	}
-	if got := len(lim.inFlight); got != 1 {
+	if got := lim.inFlight.occupied(); got != 1 {
 		t.Errorf("%d in-flight slots held, want 1 until the request completes", got)
 	}
 
@@ -206,7 +206,7 @@ func TestPendingRequestsRecordRejects(t *testing.T) {
 			if _, ok := p.record(tc.raw, 0x1234, exampleQuestion, nil, tc.upstreams, tc.hasSlot); ok {
 				t.Fatal("record succeeded")
 			}
-			if got := len(lim.inFlight); got != 1 {
+			if got := lim.inFlight.occupied(); got != 1 {
 				t.Errorf("%d in-flight slots held, want 1: the other query's", got)
 			}
 			if len(p.entries) != 0 || len(p.inUse) != 0 {
@@ -234,11 +234,11 @@ func TestPendingRequestsRecordAllocatesFreeID(t *testing.T) {
 	}
 
 	// With every ID in flight, record fails and frees the query's slot.
-	lim.inFlight <- struct{}{}
+	lim.inFlight.tryAcquire()
 	if _, ok := p.record(dnsQuery(0x5678), 0x5678, exampleQuestion, nil, upstreams, true); ok {
 		t.Fatal("record succeeded with every upstream ID in flight")
 	}
-	if got := len(lim.inFlight); got != 1 {
+	if got := lim.inFlight.occupied(); got != 1 {
 		t.Errorf("%d in-flight slots held, want 1 for the recorded query", got)
 	}
 }
@@ -247,7 +247,7 @@ func TestPendingRequestsDeleteEntryReleasesSlotOnce(t *testing.T) {
 	lim := newLimiter()
 	p := newPendingRequests(lim)
 	upstreams := []string{"10.96.0.10:53"}
-	lim.inFlight <- struct{}{} // held by another query
+	lim.inFlight.tryAcquire() // held by another query
 	id, _ := recordQuery(t, p, 0x1234, nil, upstreams)
 	key := pendingKey{upstreamID: id, transportSource: upstreams[0]}
 	entry := p.entries[key]
@@ -260,7 +260,7 @@ func TestPendingRequestsDeleteEntryReleasesSlotOnce(t *testing.T) {
 	if len(p.entries) != 0 || len(p.inUse) != 0 {
 		t.Errorf("deleted entry left %d entries and %d IDs in use", len(p.entries), len(p.inUse))
 	}
-	if got := len(lim.inFlight); got != 1 {
+	if got := lim.inFlight.occupied(); got != 1 {
 		t.Errorf("%d in-flight slots held, want 1: deleting twice must free the slot once", got)
 	}
 }
@@ -300,7 +300,7 @@ func TestPendingRequestsFailOverOnSendError(t *testing.T) {
 		t.Errorf("upstreamIdx = %d, want 1", entry.upstreamIdx)
 	}
 	checkExpiry(t, entry.expiry, before, after, p.timeoutForAttempt(1, len(upstreams)))
-	if got := len(lim.inFlight); got != 1 {
+	if got := lim.inFlight.occupied(); got != 1 {
 		t.Errorf("%d in-flight slots held during failover, want 1", got)
 	}
 
@@ -316,7 +316,7 @@ func TestPendingRequestsFailOverOnSendError(t *testing.T) {
 	if len(p.entries) != 0 || len(p.inUse) != 0 {
 		t.Errorf("dropped request left %d entries and %d IDs in use", len(p.entries), len(p.inUse))
 	}
-	if got := len(lim.inFlight); got != 0 {
+	if got := lim.inFlight.occupied(); got != 0 {
 		t.Errorf("%d in-flight slots held after the last upstream failed, want 0", got)
 	}
 }
@@ -348,7 +348,7 @@ func TestPendingRequestsByClientSource(t *testing.T) {
 	if _, ok := p.inUse[idB]; !ok || len(p.inUse) != 1 {
 		t.Errorf("%d IDs in use, want only clientB's %#x", len(p.inUse), idB)
 	}
-	if got := len(lim.inFlight); got != 1 {
+	if got := lim.inFlight.occupied(); got != 1 {
 		t.Errorf("%d in-flight slots held, want 1 for clientB's request", got)
 	}
 }
@@ -365,7 +365,7 @@ func TestPendingRequestsClearAll(t *testing.T) {
 	if len(p.entries) != 0 || len(p.inUse) != 0 {
 		t.Errorf("clearAll left %d entries and %d IDs in use", len(p.entries), len(p.inUse))
 	}
-	if got := len(lim.inFlight); got != 0 {
+	if got := lim.inFlight.occupied(); got != 0 {
 		t.Errorf("%d in-flight slots held after clearAll, want 0", got)
 	}
 }
@@ -406,7 +406,7 @@ func TestPendingRequestsSweep(t *testing.T) {
 	if len(p.entries) != 0 || len(p.inUse) != 0 {
 		t.Errorf("expired request left %d entries and %d IDs in use", len(p.entries), len(p.inUse))
 	}
-	if got := len(lim.inFlight); got != 0 {
+	if got := lim.inFlight.occupied(); got != 0 {
 		t.Errorf("%d in-flight slots held after expiry, want 0", got)
 	}
 }
@@ -442,7 +442,7 @@ func TestPendingRequestsSweepDeliversDeferredAnswer(t *testing.T) {
 	if len(p.entries) != 0 || len(p.inUse) != 0 {
 		t.Errorf("expired request left %d entries and %d IDs in use", len(p.entries), len(p.inUse))
 	}
-	if got := len(lim.inFlight); got != 0 {
+	if got := lim.inFlight.occupied(); got != 0 {
 		t.Errorf("%d in-flight slots held after expiry, want 0", got)
 	}
 }

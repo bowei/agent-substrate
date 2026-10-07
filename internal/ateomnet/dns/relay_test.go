@@ -409,7 +409,7 @@ func TestRelayClosesTCPConnectionsWhenServingEnds(t *testing.T) {
 	}
 	defer conn.Close()
 	waitFor(t, "the connection to reach an upstream", func() bool { return held.Load() == 1 })
-	if got := len(srv.limiter.connections); got != 1 {
+	if got := srv.limiter.connections.occupied(); got != 1 {
 		t.Fatalf("%d connection slots held before Stop, want 1", got)
 	}
 
@@ -418,7 +418,7 @@ func TestRelayClosesTCPConnectionsWhenServingEnds(t *testing.T) {
 	if err := srv.Stop(stopCtx); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if got := len(srv.limiter.connections); got != 0 {
+	if got := srv.limiter.connections.occupied(); got != 0 {
 		t.Errorf("%d connection slots still held after Stop, want 0", got)
 	}
 
@@ -457,7 +457,7 @@ func TestStopCancelsUDPQueriesInFlight(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the resolver never saw the query")
 	}
-	if got := len(srv.limiter.inFlight); got != 1 {
+	if got := srv.limiter.inFlight.occupied(); got != 1 {
 		t.Fatalf("%d queries in flight before Stop, want 1", got)
 	}
 
@@ -467,7 +467,7 @@ func TestStopCancelsUDPQueriesInFlight(t *testing.T) {
 	if err := srv.Stop(stopCtx); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if got := len(srv.limiter.inFlight); got != 0 {
+	if got := srv.limiter.inFlight.occupied(); got != 0 {
 		t.Errorf("%d in-flight slots still held after Stop, want 0", got)
 	}
 }
@@ -491,10 +491,10 @@ func TestRelayLimitsArePerActor(t *testing.T) {
 		t.Cleanup(func() { conn.Close() })
 	}
 	waitFor(t, "actor A to fill up", func() bool { return held.Load() == maxConnections })
-	if got := len(srvA.limiter.connections); got != maxConnections {
+	if got := srvA.limiter.connections.occupied(); got != maxConnections {
 		t.Fatalf("actor A connection slots = %d, want %d", got, maxConnections)
 	}
-	if got := len(srvB.limiter.connections); got != 0 {
+	if got := srvB.limiter.connections.occupied(); got != 0 {
 		t.Fatalf("actor B connection slots = %d, want 0", got)
 	}
 
@@ -505,7 +505,7 @@ func TestRelayLimitsArePerActor(t *testing.T) {
 	}
 	defer connB.Close()
 	waitFor(t, "actor B connection to reach upstream", func() bool { return held.Load() == maxConnections+1 })
-	if got := len(srvB.limiter.connections); got != 1 {
+	if got := srvB.limiter.connections.occupied(); got != 1 {
 		t.Errorf("actor B connection slots = %d, want 1", got)
 	}
 }
