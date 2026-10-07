@@ -31,6 +31,29 @@ const (
 	typeIXFR dnsmessage.Type = 251
 )
 
+// actionKind describes the transport-agnostic decision returned by the DNS
+// protocol handler.
+type actionKind uint8
+
+const (
+	actionDrop actionKind = iota
+	actionReply
+	actionForward
+	actionFailover
+	actionDeliver
+)
+
+// action is the decision returned by onRequest and onResponse.
+type action struct {
+	kind            actionKind
+	payload         []byte
+	clientRequestID uint16
+	question        dnsmessage.Question
+	clientSource    any
+	upstreamIdx     int
+	hasSlot         bool
+}
+
 // queryPolicy decides whether a parsed DNS question is permitted.
 type queryPolicy func(q dnsmessage.Question) bool
 
@@ -80,7 +103,7 @@ func (h *dnsHandler) onRequest(raw []byte) action {
 	if err != nil {
 		return action{
 			kind:    actionReply,
-			payload: synthesizeReply(hdr, dnsmessage.RCodeFormatError, nil),
+			payload: makeReply(hdr, dnsmessage.RCodeFormatError, nil),
 		}
 	}
 
@@ -94,14 +117,14 @@ func (h *dnsHandler) onRequest(raw []byte) action {
 		}
 		return action{
 			kind:    actionReply,
-			payload: synthesizeReply(hdr, dnsmessage.RCodeNotImplemented, qPtr),
+			payload: makeReply(hdr, dnsmessage.RCodeNotImplemented, qPtr),
 		}
 	}
 
 	if qdCount != 1 {
 		return action{
 			kind:    actionReply,
-			payload: synthesizeReply(hdr, dnsmessage.RCodeFormatError, nil),
+			payload: makeReply(hdr, dnsmessage.RCodeFormatError, nil),
 		}
 	}
 
@@ -109,14 +132,14 @@ func (h *dnsHandler) onRequest(raw []byte) action {
 	if err != nil {
 		return action{
 			kind:    actionReply,
-			payload: synthesizeReply(hdr, dnsmessage.RCodeFormatError, nil),
+			payload: makeReply(hdr, dnsmessage.RCodeFormatError, nil),
 		}
 	}
 
 	if q.Type == dnsmessage.TypeAXFR || q.Type == typeIXFR {
 		return action{
 			kind:    actionReply,
-			payload: synthesizeReply(hdr, dnsmessage.RCodeNotImplemented, &q),
+			payload: makeReply(hdr, dnsmessage.RCodeNotImplemented, &q),
 		}
 	}
 
@@ -124,11 +147,13 @@ func (h *dnsHandler) onRequest(raw []byte) action {
 	if h.allow != nil && !h.allow(cq) {
 		return action{
 			kind:    actionReply,
-			payload: synthesizeReply(hdr, dnsmessage.RCodeRefused, &q),
+			payload: makeReply(hdr, dnsmessage.RCodeRefused, &q),
 		}
 	}
 
+	// Set to true for the flight limiter update on defer.
 	forwarded = true
+
 	return action{
 		kind:            actionForward,
 		clientRequestID: hdr.ID,
@@ -222,7 +247,7 @@ func canonicalQuestion(q dnsmessage.Question) dnsmessage.Question {
 	return q
 }
 
-func synthesizeReply(hdr dnsmessage.Header, rcode dnsmessage.RCode, q *dnsmessage.Question) []byte {
+func makeReply(hdr dnsmessage.Header, rcode dnsmessage.RCode, q *dnsmessage.Question) []byte {
 	respHdr := dnsmessage.Header{
 		ID:                 hdr.ID,
 		Response:           true,
@@ -231,12 +256,14 @@ func synthesizeReply(hdr dnsmessage.Header, rcode dnsmessage.RCode, q *dnsmessag
 		RecursionAvailable: true,
 		RCode:              rcode,
 	}
+
 	b := dnsmessage.NewBuilder(nil, respHdr)
 	if q != nil {
 		if err := b.StartQuestions(); err == nil {
 			_ = b.Question(*q)
 		}
 	}
+
 	out, err := b.Finish()
 	if err != nil {
 		var fallback [dnsHeaderLen]byte
@@ -248,5 +275,6 @@ func synthesizeReply(hdr dnsmessage.Header, rcode dnsmessage.RCode, q *dnsmessag
 		fallback[3] = 0x80 | (byte(rcode) & 0x0f)
 		return fallback[:]
 	}
+
 	return out
 }

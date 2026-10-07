@@ -28,48 +28,12 @@ import (
 )
 
 // tcpClientConn wraps a downstream actor TCP connection with a mutex to
-// serialize concurrent frame writes from synthesized replies and out-of-order
+// serialize concurrent frame writes from replies and out-of-order
 // upstream responses.
 type tcpClientConn struct {
 	conn    net.Conn
 	writeMu sync.Mutex
 	eof     atomic.Bool
-}
-
-func (c *tcpClientConn) writeFrame(msg []byte) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return writeTCPFrame(c.conn, msg)
-}
-
-// readTCPFrame reads a single RFC 1035 §4.2.2 2-byte big-endian length-prefixed
-// DNS message from r.
-func readTCPFrame(r io.Reader) ([]byte, error) {
-	var lenBuf [2]byte
-	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
-		return nil, err
-	}
-	length := int(binary.BigEndian.Uint16(lenBuf[:]))
-	msg := make([]byte, length)
-	if _, err := io.ReadFull(r, msg); err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil, io.ErrUnexpectedEOF
-		}
-		return nil, err
-	}
-	return msg, nil
-}
-
-// writeTCPFrame writes msg prefixed with its 2-byte big-endian length to w.
-func writeTCPFrame(w io.Writer, msg []byte) error {
-	if len(msg) > 0xffff {
-		return fmt.Errorf("dns: TCP message length %d exceeds uint16 maximum", len(msg))
-	}
-	frame := make([]byte, 2+len(msg))
-	binary.BigEndian.PutUint16(frame[0:2], uint16(len(msg)))
-	copy(frame[2:], msg)
-	_, err := w.Write(frame)
-	return err
 }
 
 // tcpHandler accepts actor TCP DNS connections and relays length-prefixed DNS
@@ -243,7 +207,11 @@ func (h *tcpHandler) readDownstream(ctx context.Context, client *tcpClientConn, 
 	}
 }
 
-func (h *tcpHandler) readUpstream(ctx context.Context, client *tcpClientConn, upstream net.Conn) {
+func (h *tcpHandler) readUpstream(
+	ctx context.Context,
+	client *tcpClientConn,
+	upstream net.Conn,
+) {
 	from := upstream.RemoteAddr()
 	for {
 		raw, err := readTCPFrame(upstream)
@@ -280,4 +248,40 @@ func (h *tcpHandler) readUpstream(ctx context.Context, client *tcpClientConn, up
 			}
 		}
 	}
+}
+
+// readTCPFrame reads a single RFC 1035 §4.2.2 2-byte big-endian length-prefixed
+// DNS message from r.
+func readTCPFrame(r io.Reader) ([]byte, error) {
+	var lenBuf [2]byte
+	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+		return nil, err
+	}
+	length := int(binary.BigEndian.Uint16(lenBuf[:]))
+	msg := make([]byte, length)
+	if _, err := io.ReadFull(r, msg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	return msg, nil
+}
+
+func (c *tcpClientConn) writeFrame(msg []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return writeTCPFrame(c.conn, msg)
+}
+
+// writeTCPFrame writes msg prefixed with its 2-byte big-endian length to w.
+func writeTCPFrame(w io.Writer, msg []byte) error {
+	if len(msg) > 0xffff {
+		return fmt.Errorf("dns: TCP message length %d exceeds uint16 maximum", len(msg))
+	}
+	frame := make([]byte, 2+len(msg))
+	binary.BigEndian.PutUint16(frame[0:2], uint16(len(msg)))
+	copy(frame[2:], msg)
+	_, err := w.Write(frame)
+	return err
 }

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -168,5 +169,82 @@ func TestUDPHandlerFailoverOnSweepTimeoutAndDeferredDelivery(t *testing.T) {
 	}
 	if rcode := dnsmessage.RCode(got2[3] & 0x0f); rcode != dnsmessage.RCodeServerFailure {
 		t.Errorf("deferred rcode = %v, want %v", rcode, dnsmessage.RCodeServerFailure)
+	}
+}
+
+func TestPendingRequestsSweep(t *testing.T) {
+	lim := newTestLimiter()
+	p := newPendingRequests(lim)
+	upstreams := []string{"10.96.0.10:53", "10.96.0.11:53"}
+	id, raw := recordQuery(t, p, 0x1234, nil, upstreams)
+	entry := p.entries[pendingKey{upstreamID: id, transportSource: upstreams[0]}]
+
+	if failovers, deliveries := p.sweep(entry.expiry); len(failovers) != 0 || len(deliveries) != 0 {
+		t.Fatalf("sweep at the expiry returned %d failovers and %d deliveries, want none until it has passed", len(failovers), len(deliveries))
+	}
+
+	// An expired attempt moves to the next upstream.
+	now := entry.expiry.Add(time.Nanosecond)
+	failovers, deliveries := p.sweep(now)
+	wantFailovers := []udpFailover{{upstreamID: id, upstreamIdx: 1, query: raw}}
+	if diff := cmp.Diff(wantFailovers, failovers, cmp.AllowUnexported(udpFailover{})); diff != "" {
+		t.Errorf("failovers mismatch (-want +got):\n%s", diff)
+	}
+	if len(deliveries) != 0 {
+		t.Errorf("sweep returned %d deliveries on failover, want 0", len(deliveries))
+	}
+	if len(p.entries) != 1 || p.entries[pendingKey{upstreamID: id, transportSource: upstreams[1]}] != entry {
+		t.Fatal("entry not re-keyed to the next upstream")
+	}
+	if want := now.Add(p.timeoutForAttempt(1, len(upstreams))); !entry.expiry.Equal(want) {
+		t.Errorf("expiry = %v, want %v", entry.expiry, want)
+	}
+
+	// An expired last attempt with no answer held back is dropped silently.
+	failovers, deliveries = p.sweep(entry.expiry.Add(time.Nanosecond))
+	if len(failovers) != 0 || len(deliveries) != 0 {
+		t.Errorf("sweep after the last attempt returned %d failovers and %d deliveries, want none", len(failovers), len(deliveries))
+	}
+	if len(p.entries) != 0 || len(p.inUse) != 0 {
+		t.Errorf("expired request left %d entries and %d IDs in use", len(p.entries), len(p.inUse))
+	}
+	if got := len(lim.inFlight); got != 0 {
+		t.Errorf("%d in-flight slots held after expiry, want 0", got)
+	}
+}
+
+// A SERVFAIL beats a timeout: when the last upstream never answers, the client
+// gets the SERVFAIL held back from an earlier one.
+func TestPendingRequestsSweepDeliversDeferredAnswer(t *testing.T) {
+	lim := newTestLimiter()
+	p := newPendingRequests(lim)
+	client := &net.UDPAddr{IP: net.ParseIP("169.254.0.2"), Port: 54321}
+	upstreams := []string{"10.96.0.10:53", "10.96.0.11:53"}
+	id, raw := recordQuery(t, p, 0x1234, client, upstreams)
+
+	// Leave the request as a SERVFAIL from the first upstream does: waiting on
+	// the second, with the SERVFAIL held back.
+	if _, _, ok := p.failOverOnSendError(id, 0); !ok {
+		t.Fatal("failOverOnSendError failed")
+	}
+	entry := p.entries[pendingKey{upstreamID: id, transportSource: upstreams[1]}]
+	entry.deferredResp = dnsAnswer(raw, byte(dnsmessage.RCodeServerFailure))
+
+	failovers, deliveries := p.sweep(entry.expiry.Add(time.Nanosecond))
+	if len(failovers) != 0 {
+		t.Errorf("sweep returned %d failovers past the last upstream, want 0", len(failovers))
+	}
+	wantDeliveries := []udpDelivery{{
+		clientAddr: client,
+		payload:    dnsAnswer(dnsQuery(0x1234), byte(dnsmessage.RCodeServerFailure)),
+	}}
+	if diff := cmp.Diff(wantDeliveries, deliveries, cmp.AllowUnexported(udpDelivery{})); diff != "" {
+		t.Errorf("deliveries mismatch (-want +got):\n%s", diff)
+	}
+	if len(p.entries) != 0 || len(p.inUse) != 0 {
+		t.Errorf("expired request left %d entries and %d IDs in use", len(p.entries), len(p.inUse))
+	}
+	if got := len(lim.inFlight); got != 0 {
+		t.Errorf("%d in-flight slots held after expiry, want 0", got)
 	}
 }
