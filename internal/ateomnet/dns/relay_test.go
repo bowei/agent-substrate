@@ -32,42 +32,49 @@ import (
 
 func TestRelayCancelsUDPExchange(t *testing.T) {
 	// A resolver that receives the query and never answers, so the exchange is
-	// blocked on the read when the context is canceled.
+	// in flight when the server stops.
 	silent, asked := newSilentResolver(t)
 
-	// Two upstreams: a canceled exchange must not move on to the second.
-	second := newFakeResolver(t, func(query []byte) []byte { return query })
+	// Two upstreams: stopping the server must not move on to the second.
+	var secondAsked atomic.Bool
+	second := newFakeResolver(t, func(query []byte) []byte {
+		secondAsked.Store(true)
+		return dnsAnswer(query, 0)
+	})
 	relay, err := NewRelayForUpstreams([]string{silent, second})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		_, err := unstartedServer(relay).exchangeUDP(ctx, dnsQuery(0x1234))
-		done <- err
-	}()
+	srv, udpAddr, _ := serveLoopback(t, relay)
+	client, err := net.Dial("udp", udpAddr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write(dnsQuery(0x1234)); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-asked:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the resolver never saw the query")
 	}
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("exchange returned %v, want cancellation", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("canceled exchange remained blocked reading upstream")
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if secondAsked.Load() {
+		t.Error("stopping the server moved on to the second upstream")
 	}
 }
 
 func TestRelayForwardsUDPVerbatim(t *testing.T) {
 	upstream := newFakeResolver(t, func(query []byte) []byte {
-		return append([]byte{0xff}, query...)
+		return dnsAnswer(query, 0)
 	})
 
 	relay, err := NewRelayForUpstreams([]string{upstream})
@@ -76,12 +83,12 @@ func TestRelayForwardsUDPVerbatim(t *testing.T) {
 	}
 	client := serveRelayUDP(t, relay)
 
-	query := []byte{0xab, 0xcd, 0x01, 0x00, 0x00, 0x01}
+	query := dnsQuery(0xabcd)
 	if _, err := client.Write(query); err != nil {
 		t.Fatal(err)
 	}
 	answer := readWithin(t, client)
-	if diff := cmp.Diff(append([]byte{0xff}, query...), answer); diff != "" {
+	if diff := cmp.Diff(dnsAnswer(query, 0), answer); diff != "" {
 		t.Errorf("answer mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -92,21 +99,22 @@ func TestRelayFallsBackToTheNextResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadAddress := dead.LocalAddr().String()
-	// Closed, so the exchange fails rather than hanging to its deadline.
+	// Closed, so the exchange times out on the first upstream and fails over.
 	dead.Close()
 
-	live := newFakeResolver(t, func(query []byte) []byte { return []byte("answered") })
+	live := newFakeResolver(t, func(query []byte) []byte { return dnsAnswer(query, 0) })
 	relay, err := NewRelayForUpstreams([]string{deadAddress, live})
 	if err != nil {
 		t.Fatal(err)
 	}
 	client := serveRelayUDP(t, relay)
 
-	if _, err := client.Write([]byte("query")); err != nil {
+	query := dnsQuery(0x2468)
+	if _, err := client.Write(query); err != nil {
 		t.Fatal(err)
 	}
-	if got := string(readWithin(t, client)); got != "answered" {
-		t.Errorf("answer = %q, want %q", got, "answered")
+	if diff := cmp.Diff(dnsAnswer(query, 0), readWithin(t, client)); diff != "" {
+		t.Errorf("answer mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -232,26 +240,31 @@ func readWithin(t *testing.T, conn net.Conn) []byte {
 
 func TestRelayForwardsAnswersLargerThanTheCommonBuffer(t *testing.T) {
 	const size = 9000
-	answer := make([]byte, size)
-	for i := range answer {
-		answer[i] = byte(i)
+	query := dnsQuery(0x1357)
+	baseAnswer := dnsAnswer(query, 0)
+	padding := make([]byte, size-len(baseAnswer))
+	for i := range padding {
+		padding[i] = byte(i)
 	}
-	upstream := newFakeResolver(t, func([]byte) []byte { return answer })
+	upstream := newFakeResolver(t, func(q []byte) []byte {
+		return append(dnsAnswer(q, 0), padding...)
+	})
 
 	relay, err := NewRelayForUpstreams([]string{upstream})
 	if err != nil {
 		t.Fatal(err)
 	}
 	client := serveRelayUDP(t, relay)
-	if _, err := client.Write([]byte("query")); err != nil {
+	if _, err := client.Write(query); err != nil {
 		t.Fatal(err)
 	}
 
+	want := append(baseAnswer, padding...)
 	got := readWithin(t, client)
 	if len(got) != size {
 		t.Fatalf("answer is %d bytes, want %d: it was cut down in the relay", len(got), size)
 	}
-	if !bytes.Equal(got, answer) {
+	if !bytes.Equal(got, want) {
 		t.Error("answer differs from what the resolver sent")
 	}
 }
@@ -273,8 +286,7 @@ func TestRelayDropsQueriesBeyondItsInFlightLimit(t *testing.T) {
 			if err != nil {
 				return
 			}
-			answer := make([]byte, n)
-			copy(answer, buf[:n])
+			answer := dnsAnswer(buf[:n], 0)
 			go func() {
 				inFlight.Add(1)
 				<-release
@@ -289,8 +301,8 @@ func TestRelayDropsQueriesBeyondItsInFlightLimit(t *testing.T) {
 	}
 	client := serveRelayUDP(t, relay)
 
-	for range maxInFlightDNS * 4 {
-		if _, err := client.Write([]byte("query")); err != nil {
+	for i := range maxInFlightDNS * 4 {
+		if _, err := client.Write(dnsQuery(uint16(i))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -507,10 +519,11 @@ func TestRelayFailsOverOnServerFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer, err := unstartedServer(relay).exchangeUDP(context.Background(), dnsQuery(0x1234))
-	if err != nil {
-		t.Fatalf("exchange: %v", err)
+	client := serveRelayUDP(t, relay)
+	if _, err := client.Write(dnsQuery(0x1234)); err != nil {
+		t.Fatal(err)
 	}
+	answer := readWithin(t, client)
 	if got := answer[3] & 0x0f; got != 0 {
 		t.Errorf("answer rcode = %d, want 0: the relay returned the failing resolver's answer", got)
 	}
@@ -529,10 +542,11 @@ func TestRelayReturnsServerFailureWhenAllFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer, err := unstartedServer(relay).exchangeUDP(context.Background(), dnsQuery(0x2345))
-	if err != nil {
-		t.Fatalf("exchange: %v", err)
+	client := serveRelayUDP(t, relay)
+	if _, err := client.Write(dnsQuery(0x2345)); err != nil {
+		t.Fatal(err)
 	}
+	answer := readWithin(t, client)
 	if got := answer[3] & 0x0f; got != rcodeRefused {
 		t.Errorf("answer rcode = %d, want the last resolver's %d", got, rcodeRefused)
 	}
@@ -553,10 +567,11 @@ func TestRelayReturnsNXDomainWithoutFailover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer, err := unstartedServer(relay).exchangeUDP(context.Background(), dnsQuery(0x3456))
-	if err != nil {
-		t.Fatalf("exchange: %v", err)
+	client := serveRelayUDP(t, relay)
+	if _, err := client.Write(dnsQuery(0x3456)); err != nil {
+		t.Fatal(err)
 	}
+	answer := readWithin(t, client)
 	if got := answer[3] & 0x0f; got != rcodeNXDomain {
 		t.Errorf("answer rcode = %d, want NXDOMAIN %d", got, rcodeNXDomain)
 	}

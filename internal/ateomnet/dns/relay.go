@@ -81,6 +81,9 @@ func NewRelayForUpstreams(upstreams []string) (*Relay, error) {
 		if _, _, err := net.SplitHostPort(u); err != nil {
 			return nil, fmt.Errorf("dns: invalid upstream resolver %q: %w", u, err)
 		}
+		if _, err := net.ResolveUDPAddr("udp", u); err != nil {
+			return nil, fmt.Errorf("dns: invalid upstream resolver %q: %w", u, err)
+		}
 	}
 
 	slog.Info("DNS relay configured", slog.Any("upstreams", upstreams))
@@ -120,6 +123,14 @@ func (r *Relay) Serve(ctx context.Context, ns netns.Handle) (*Server, error) {
 	}); err != nil {
 		return nil, err
 	}
+
+	egressUDP, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		_ = netC.udp.Close()
+		_ = netC.tcpListener.Close()
+		return nil, fmt.Errorf("while opening the worker DNS egress socket: %w", err)
+	}
+	netC.egressUDP = egressUDP
 
 	return r.serveOn(ctx, &netC), nil
 }
