@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/netip"
 	"sync"
 	"time"
 )
@@ -36,29 +35,6 @@ const (
 	// when fallback upstreams remain.
 	defaultUpstreamAttemptTimeout = 1 * time.Second
 )
-
-func normalizeAddr(addr net.Addr) string {
-	if addr == nil {
-		return ""
-	}
-	switch a := addr.(type) {
-	case *net.UDPAddr:
-		ap := a.AddrPort()
-		return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()).String()
-	case *net.TCPAddr:
-		ap := a.AddrPort()
-		return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()).String()
-	default:
-		return normalizeAddrString(addr.String())
-	}
-}
-
-func normalizeAddrString(s string) string {
-	if ap, err := netip.ParseAddrPort(s); err == nil {
-		return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()).String()
-	}
-	return s
-}
 
 // udpHandler manages actor UDP DNS traffic using an actorSock from
 // the ACtor and upstreamSock out to the upstream DNS server.
