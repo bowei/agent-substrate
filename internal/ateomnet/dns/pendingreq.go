@@ -219,15 +219,27 @@ func (p *pendingRequests) clearAll() {
 	}
 }
 
-// sweep inspects all pending entries at now, advancing expired multi-upstream
+type reqFailover struct {
+	upstreamID  uint16
+	upstreamIdx int
+	query       []byte
+}
+
+type reqDelivery struct {
+	clientAddr net.Addr
+	payload    []byte
+}
+
+// sweep inspects all pending entries at `now“, advancing expired multi-upstream
 // entries to their next upstream and evicting entries that have exhausted all
 // upstreams.
-func (p *pendingRequests) sweep(now time.Time) ([]udpFailover, []udpDelivery) {
+func (p *pendingRequests) sweep(now time.Time) ([]reqFailover, []reqDelivery) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	var failovers []udpFailover
-	var deliveries []udpDelivery
+	var failovers []reqFailover
+	var deliveries []reqDelivery
+
 	for key, entry := range p.entries {
 		if entry.expiry.IsZero() || !now.After(entry.expiry) {
 			continue
@@ -241,7 +253,7 @@ func (p *pendingRequests) sweep(now time.Time) ([]udpFailover, []udpDelivery) {
 				transportSource: normalizeAddrString(entry.upstreams[entry.upstreamIdx]),
 			}
 			p.entries[nextKey] = entry
-			failovers = append(failovers, udpFailover{
+			failovers = append(failovers, reqFailover{
 				upstreamID:  key.upstreamID,
 				upstreamIdx: entry.upstreamIdx,
 				query:       entry.rawQuery,
@@ -254,7 +266,7 @@ func (p *pendingRequests) sweep(now time.Time) ([]udpFailover, []udpDelivery) {
 			if addr, ok := entry.clientSource.(net.Addr); ok {
 				resp := bytes.Clone(entry.deferredResp)
 				binary.BigEndian.PutUint16(resp[0:2], entry.clientRequestID)
-				deliveries = append(deliveries, udpDelivery{
+				deliveries = append(deliveries, reqDelivery{
 					clientAddr: addr,
 					payload:    resp,
 				})

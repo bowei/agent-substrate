@@ -37,17 +37,6 @@ const (
 	defaultUpstreamAttemptTimeout = 1 * time.Second
 )
 
-type udpFailover struct {
-	upstreamID  uint16
-	upstreamIdx int
-	query       []byte
-}
-
-type udpDelivery struct {
-	clientAddr net.Addr
-	payload    []byte
-}
-
 func normalizeAddr(addr net.Addr) string {
 	if addr == nil {
 		return ""
