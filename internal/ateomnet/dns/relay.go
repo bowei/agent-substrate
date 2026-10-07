@@ -30,18 +30,6 @@ const (
 	// dnsPort is the relay port on the sandbox's gateway.
 	dnsPort = 53
 
-	// Read complete UDP datagrams without truncating EDNS responses.
-	maxDNSDatagram = 65535
-
-	// Drop excess UDP queries to bound goroutines and upstream sockets.
-	maxInFlightDNS = 64
-
-	// maxDNSConnections bounds open TCP connections.
-	maxDNSConnections = 16
-
-	// dnsTCPTimeout limits connection lifetime, including idle clients.
-	dnsTCPTimeout = 30 * time.Second
-
 	// dnsExchangeTimeout bounds each upstream attempt.
 	dnsExchangeTimeout = 5 * time.Second
 )

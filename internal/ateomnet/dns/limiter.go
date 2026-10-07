@@ -41,7 +41,7 @@ type limiterSlots struct {
 	used atomic.Int32
 }
 
-// tryAcquire a virtual slot. Returns false if this is at capacity.
+// tryAcquire a virtual slot. Returns false if this slot is at capacity.
 func (s *limiterSlots) tryAcquire() bool {
 	// Disabled if zero.
 	if s == nil {

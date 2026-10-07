@@ -34,6 +34,8 @@ type pendingKey struct {
 
 // pendingRequest holds the per-query state needed to validate responses,
 // restore the actor's transaction ID, and fail over across upstreams.
+//
+// TODO(bowei): we can likely prune these fields down in a second pass.
 type pendingRequest struct {
 	clientRequestID uint16
 	clientSource    any
@@ -47,6 +49,8 @@ type pendingRequest struct {
 }
 
 // pendingRequests maps (upstreamID, transportSource) to in-flight requests.
+//
+// TODO: fields need to be documented.
 type pendingRequests struct {
 	mu      sync.Mutex
 	entries map[pendingKey]*pendingRequest
