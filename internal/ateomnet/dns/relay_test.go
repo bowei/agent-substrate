@@ -230,7 +230,7 @@ func readWithin(t *testing.T, conn net.Conn) []byte {
 }
 
 func TestRelayForwardsAnswersLargerThanTheCommonBuffer(t *testing.T) {
-	const size = 9000
+	const size = maxDatagramSize
 	query := dnsQuery(0x1357)
 	baseAnswer := dnsAnswer(query, 0)
 	padding := make([]byte, size-len(baseAnswer))
