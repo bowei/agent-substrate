@@ -89,13 +89,13 @@ func (h *udpHandler) serve(ctx context.Context) error {
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		if err := h.readFromActor(ctx); err != nil {
+		if err := h.processRequests(ctx); err != nil {
 			errCh <- err
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if err := h.readFromUpstream(ctx); err != nil {
+		if err := h.processResponses(ctx); err != nil {
 			errCh <- err
 		}
 	}()
@@ -116,7 +116,7 @@ func (h *udpHandler) serve(ctx context.Context) error {
 	return errs
 }
 
-func (h *udpHandler) readFromActor(ctx context.Context) error {
+func (h *udpHandler) processRequests(ctx context.Context) error {
 	buf := make([]byte, maxDatagramSize)
 	for {
 		n, from, err := h.actorSock.ReadFrom(buf)
@@ -162,7 +162,7 @@ func (h *udpHandler) sendToUpstream(ctx context.Context, upstreamID uint16, idx 
 	}
 }
 
-func (h *udpHandler) readFromUpstream(ctx context.Context) error {
+func (h *udpHandler) processResponses(ctx context.Context) error {
 	buf := make([]byte, maxDatagramSize)
 	for {
 		n, from, err := h.upstreamSock.ReadFrom(buf)
