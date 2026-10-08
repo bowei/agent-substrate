@@ -44,13 +44,11 @@ const (
 
 // action is the decision returned by onRequest and onResponse.
 type action struct {
-	kind            actionKind
-	payload         []byte
-	clientRequestID uint16
-	question        dnsmessage.Question
-	clientSource    any
-	upstreamIdx     int
-	hasSlot         bool
+	kind         actionKind
+	payload      []byte
+	upstreamID   uint16
+	clientSource any
+	upstreamIdx  int
 }
 
 // queryPolicy decides whether a parsed DNS question is permitted.
@@ -76,9 +74,9 @@ func newDNSHandler(pending *pendingRequests, lim *limiter, allow queryPolicy) *d
 }
 
 // onRequest inspects an incoming DNS query packet from the actor and returns
-// whether to drop it, reply immediately with a synthesized error, or forward it
-// to an upstream resolver.
-func (h *dnsHandler) onRequest(raw []byte) action {
+// whether to drop it, reply immediately with a synthesized error, or record and
+// forward it to an upstream resolver.
+func (h *dnsHandler) onRequest(raw []byte, clientSource any, upstreams []string) action {
 	if !protocol.RequestSanityCheck(raw) {
 		return action{kind: actionDrop}
 	}
@@ -140,14 +138,17 @@ func (h *dnsHandler) onRequest(raw []byte) action {
 		return errReplyAction(hdr, dnsmessage.RCodeRefused, &q)
 	}
 
-	// Set to true for the defer logic.
+	// Set to true before calling record, which takes ownership of hasSlot.
 	forwarded = true
+	upstreamID, ok := h.pending.record(raw, hdr.ID, cq, clientSource, upstreams, hasSlot)
+	if !ok {
+		return action{kind: actionDrop}
+	}
 
 	return action{
-		kind:            actionForward,
-		clientRequestID: hdr.ID,
-		question:        cq,
-		hasSlot:         hasSlot,
+		kind:       actionForward,
+		payload:    raw,
+		upstreamID: upstreamID,
 	}
 }
 

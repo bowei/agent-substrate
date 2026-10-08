@@ -173,49 +173,6 @@ func TestPendingRequestsRecord(t *testing.T) {
 	}
 }
 
-func TestPendingRequestsRecordRejects(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		raw       []byte
-		upstreams []string
-		hasSlot   bool
-	}{
-		{
-			name:      "query too short to carry an ID",
-			raw:       []byte{0x12},
-			upstreams: []string{"10.96.0.10:53"},
-			hasSlot:   true,
-		},
-		{
-			name:    "no upstreams",
-			raw:     dnsQuery(0x1234),
-			hasSlot: true,
-		},
-		{
-			name: "no upstreams and no slot held",
-			raw:  dnsQuery(0x1234),
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			lim := newLimiter()
-			p := newPendingRequests(lim)
-			lim.inFlight.tryAcquire() // held by another query
-			if tc.hasSlot {
-				lim.inFlight.tryAcquire()
-			}
-			if _, ok := p.record(tc.raw, 0x1234, exampleQuestion, nil, tc.upstreams, tc.hasSlot); ok {
-				t.Fatal("record succeeded")
-			}
-			if got := lim.inFlight.occupied(); got != 1 {
-				t.Errorf("%d in-flight slots held, want 1: the other query's", got)
-			}
-			if len(p.entries) != 0 || p.inUse.Count() != 0 {
-				t.Errorf("rejected query left %d entries and %d IDs in use", len(p.entries), p.inUse.Count())
-			}
-		})
-	}
-}
-
 // Responses are matched by upstream ID, so record must not hand out one still
 // in flight.
 func TestPendingRequestsRecordAllocatesFreeID(t *testing.T) {

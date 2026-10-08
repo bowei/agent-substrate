@@ -127,7 +127,7 @@ func (h *udpHandler) readFromActor(ctx context.Context) error {
 			return fmt.Errorf("dns: reading actor DNS query: %w", err)
 		}
 		raw := bytes.Clone(buf[:n])
-		act := h.dns.onRequest(raw)
+		act := h.dns.onRequest(raw, from, h.upstreamStrs)
 		switch act.kind {
 		case actionDrop:
 			continue
@@ -136,11 +136,7 @@ func (h *udpHandler) readFromActor(ctx context.Context) error {
 				slog.WarnContext(ctx, "dns relay could not return a synthesized DNS reply", slog.Any("err", err))
 			}
 		case actionForward:
-			upstreamID, ok := h.pending.record(raw, act.clientRequestID, act.question, from, h.upstreamStrs, act.hasSlot)
-			if !ok {
-				continue
-			}
-			h.sendToUpstream(ctx, upstreamID, 0, raw)
+			h.sendToUpstream(ctx, act.upstreamID, 0, act.payload)
 		}
 	}
 }

@@ -16,13 +16,13 @@ package dns
 
 import (
 	"bytes"
-	"encoding/binary"
 	"math/rand/v2"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/agent-substrate/substrate/internal/ateomnet/dns/freemap"
+	"github.com/agent-substrate/substrate/internal/ateomnet/dns/protocol"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -115,9 +115,9 @@ func (p *pendingRequests) timeoutForAttempt(upstreamIdx int, numUpstreams int) t
 	return timeout
 }
 
-// record allocates a unique upstreamID, rewrites raw[0:2] to upstreamID, and
-// stores a pendingRequest entry for upstreams[0]. It takes ownership of
-// releasing the caller's hasSlot in-flight slot on failure or entry removal.
+// record allocates a unique upstreamID and stores a pendingRequest entry for
+// upstreams[0].It takes ownership of releasing the caller's hasSlot in-flight
+// slot on failure or entry removal.
 func (p *pendingRequests) record(
 	raw []byte,
 	clientReqID uint16,
@@ -126,26 +126,12 @@ func (p *pendingRequests) record(
 	upstreams []string,
 	hasSlot bool,
 ) (uint16, bool) {
-	// Reject packets too short for a 2-byte ID or missing upstream targets.
-	if len(raw) < 2 || len(upstreams) == 0 {
-		if hasSlot {
-			p.limiter.inFlight.release()
-		}
-		return 0, false
-	}
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.inUse.IsFull() {
-		if hasSlot {
-			p.limiter.inFlight.release()
-		}
-		return 0, false
-	}
-
 	// Probe from a random starting ID so upstream transaction IDs are not predictable.
-	upstreamID, ok := p.inUse.FindFirstUnsetFrom(uint16(rand.Uint32()))
+	start := uint16(rand.Uint32())
+	upstreamID, ok := p.inUse.FindFirstUnsetFrom(start)
 	if !ok {
 		if hasSlot {
 			p.limiter.inFlight.release()
@@ -154,7 +140,7 @@ func (p *pendingRequests) record(
 	}
 
 	// Rewrite the packet's transaction ID in place and clone it for failover retries.
-	binary.BigEndian.PutUint16(raw[0:2], upstreamID)
+	protocol.SetTxnID(raw, upstreamID)
 	source := normalizeAddrString(upstreams[0])
 	key := pendingKey{
 		upstreamID:      upstreamID,
@@ -171,6 +157,7 @@ func (p *pendingRequests) record(
 		expiry:          time.Now().Add(p.timeoutForAttempt(0, len(upstreams))),
 		hasSlot:         hasSlot,
 	}
+
 	return upstreamID, true
 }
 
@@ -316,7 +303,7 @@ func (p *pendingRequests) sweep(now time.Time) ([]reqFailover, []reqDelivery) {
 		if entry.deferredResp != nil {
 			if addr, ok := entry.clientSource.(net.Addr); ok {
 				resp := bytes.Clone(entry.deferredResp)
-				binary.BigEndian.PutUint16(resp[0:2], entry.clientRequestID)
+				protocol.SetTxnID(resp, entry.clientRequestID)
 				deliveries = append(deliveries, reqDelivery{
 					clientAddr: addr,
 					payload:    resp,

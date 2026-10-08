@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	// defaultConnectionTimeout limits connection lifetime, including idle clients.
+	// defaultConnectionTimeout limits idle connection time between reads/writes.
 	defaultConnectionTimeout = 30 * time.Second
 )
 
@@ -100,16 +100,28 @@ func (h *tcpHandler) serve(ctx context.Context) error {
 			defer wg.Done()
 			defer func() { h.limiter.connections.release() }()
 
-			h.handleConn(ctx, conn)
+			h.onConnect(ctx, conn)
 		}()
 	}
 }
 
-func (h *tcpHandler) handleConn(ctx context.Context, downstream net.Conn) {
+// refreshDeadline for extending the TCP connection closure on idle.
+func (h *tcpHandler) refreshDeadline(ctx context.Context, downstream, upstream net.Conn) {
+	deadline := time.Now().Add(h.tcpTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = downstream.SetDeadline(deadline)
+	_ = upstream.SetDeadline(deadline)
+}
+
+func (h *tcpHandler) onConnect(ctx context.Context, downstream net.Conn) {
 	defer downstream.Close()
 
 	var upstream net.Conn
 	var errs error
+
+	// Get a connection to a healthy upstream.
 	for _, address := range h.upstreams {
 		conn, err := h.dialer.DialContext(ctx, "tcp", address)
 		if err != nil {
@@ -131,30 +143,31 @@ func (h *tcpHandler) handleConn(ctx context.Context, downstream net.Conn) {
 	})
 	defer stop()
 
-	deadline := time.Now().Add(h.tcpTimeout)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
-	}
-	_ = downstream.SetDeadline(deadline)
-	_ = upstream.SetDeadline(deadline)
+	// Set initial idle close deadline for the connections.
+	h.refreshDeadline(ctx, downstream, upstream)
 
 	client := &tcpClientConn{conn: downstream}
 	defer h.pending.removeByClientSource(client)
 
+	// Forward request/responses.
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		h.readDownstream(ctx, client, upstream)
+		h.processRequests(ctx, client, upstream)
 	}()
 	go func() {
 		defer wg.Done()
-		h.readUpstream(ctx, client, upstream)
+		h.processResponses(ctx, client, upstream)
 	}()
 	wg.Wait()
 }
 
-func (h *tcpHandler) readDownstream(ctx context.Context, client *tcpClientConn, upstream net.Conn) {
+func (h *tcpHandler) processRequests(
+	ctx context.Context,
+	client *tcpClientConn,
+	upstream net.Conn,
+) {
 	upstreamSource := normalizeAddr(upstream.RemoteAddr())
 	upstreams := []string{upstreamSource}
 
@@ -175,8 +188,10 @@ func (h *tcpHandler) readDownstream(ctx context.Context, client *tcpClientConn, 
 			_ = client.conn.Close()
 			return
 		}
+		h.refreshDeadline(ctx, client.conn, upstream)
 
-		act := h.dns.onRequest(raw)
+		act := h.dns.onRequest(raw, client, upstreams)
+
 		switch act.kind {
 		case actionDrop:
 			continue
@@ -189,12 +204,9 @@ func (h *tcpHandler) readDownstream(ctx context.Context, client *tcpClientConn, 
 				_ = client.conn.Close()
 				return
 			}
+			h.refreshDeadline(ctx, client.conn, upstream)
 		case actionForward:
-			_, ok := h.pending.record(raw, act.clientRequestID, act.question, client, upstreams, act.hasSlot)
-			if !ok {
-				continue
-			}
-			if err := protocol.WriteTCPFrame(upstream, raw); err != nil {
+			if err := protocol.WriteTCPFrame(upstream, act.payload); err != nil {
 				if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
 					slog.WarnContext(ctx, "dns relay could not forward TCP DNS query", slog.Any("err", err))
 				}
@@ -202,11 +214,12 @@ func (h *tcpHandler) readDownstream(ctx context.Context, client *tcpClientConn, 
 				_ = client.conn.Close()
 				return
 			}
+			h.refreshDeadline(ctx, client.conn, upstream)
 		}
 	}
 }
 
-func (h *tcpHandler) readUpstream(
+func (h *tcpHandler) processResponses(
 	ctx context.Context,
 	client *tcpClientConn,
 	upstream net.Conn,
@@ -223,6 +236,7 @@ func (h *tcpHandler) readUpstream(
 			_ = client.conn.Close()
 			return
 		}
+		h.refreshDeadline(ctx, client.conn, upstream)
 
 		act := h.dns.onResponse(raw, from)
 		switch act.kind {
@@ -241,6 +255,7 @@ func (h *tcpHandler) readUpstream(
 				_ = client.conn.Close()
 				return
 			}
+			h.refreshDeadline(ctx, client.conn, upstream)
 			if client.eof.Load() && h.pending.countByClientSource(client) == 0 {
 				_ = upstream.Close()
 				return

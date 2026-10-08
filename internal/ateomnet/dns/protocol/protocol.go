@@ -59,6 +59,11 @@ func ResponseSanityCheck(raw []byte) bool {
 	return true
 }
 
+// SetTxnID in the DNS packet.
+func SetTxnID(raw []byte, id uint16) {
+	binary.BigEndian.PutUint16(raw[0:2], id)
+}
+
 // qdCountFromRaw from the raw packet.
 //
 // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+

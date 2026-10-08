@@ -51,22 +51,23 @@ func TestDNSHandlerOnRequestDrop(t *testing.T) {
 	}
 	pending := newPendingRequests(lim)
 	h := newDNSHandler(pending, lim, nil)
+	upstreams := []string{"10.96.0.10:53"}
 
 	// 1. Short packet (< 12 bytes).
-	if act := h.onRequest([]byte{1, 2, 3, 4}); act.kind != actionDrop {
+	if act := h.onRequest([]byte{1, 2, 3, 4}, nil, upstreams); act.kind != actionDrop {
 		t.Errorf("short packet action = %v, want actionDrop", act.kind)
 	}
 
 	// 2. Packet with QR == 1 (response bit set).
 	resp := dnsAnswer(dnsQuery(0x1234), 0)
-	if act := h.onRequest(resp); act.kind != actionDrop {
+	if act := h.onRequest(resp, nil, upstreams); act.kind != actionDrop {
 		t.Errorf("QR=1 packet action = %v, want actionDrop", act.kind)
 	}
 
 	// 3. Rate-limited (inFlight full).
 	lim.inFlight.tryAcquire()
 	defer lim.inFlight.release()
-	if act := h.onRequest(dnsQuery(0x1234)); act.kind != actionDrop {
+	if act := h.onRequest(dnsQuery(0x1234), nil, upstreams); act.kind != actionDrop {
 		t.Errorf("rate-limited packet action = %v, want actionDrop", act.kind)
 	}
 }
@@ -78,6 +79,7 @@ func TestDNSHandlerOnRequestSynthesizedReplies(t *testing.T) {
 		return q.Name.String() != "blocked.example.com." && q.Type != dnsmessage.TypeTXT
 	}
 	h := newDNSHandler(pending, lim, allow)
+	upstreams := []string{"10.96.0.10:53"}
 
 	qExample := dnsmessage.Question{
 		Name:  dnsmessage.MustNewName("example.com."),
@@ -177,7 +179,7 @@ func TestDNSHandlerOnRequestSynthesizedReplies(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			wantID := binary.BigEndian.Uint16(tc.raw[0:2])
-			act := h.onRequest(tc.raw)
+			act := h.onRequest(tc.raw, nil, upstreams)
 			if act.kind != actionReply {
 				t.Fatalf("action.kind = %v, want actionReply", act.kind)
 			}
@@ -207,6 +209,11 @@ func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 	pending := newPendingRequests(lim)
 	h := newDNSHandler(pending, lim, nil)
 
+	upstream1 := &net.UDPAddr{IP: net.ParseIP("10.96.0.10"), Port: 53}
+	upstream2 := &net.UDPAddr{IP: net.ParseIP("10.96.0.11"), Port: 53}
+	wrongUpstream := &net.UDPAddr{IP: net.ParseIP("10.96.0.99"), Port: 53}
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("169.254.0.2"), Port: 54321}
+
 	// Send query with mixed-case QNAME to verify case-insensitive RFC 4343 matching.
 	query := buildTestMessage(t, dnsmessage.Header{
 		ID:               0xbeef,
@@ -217,26 +224,14 @@ func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 		Class: dnsmessage.ClassINET,
 	}})
 
-	act := h.onRequest(query)
+	act := h.onRequest(bytes.Clone(query), clientAddr, []string{upstream1.String(), upstream2.String()})
 	if act.kind != actionForward {
 		t.Fatalf("onRequest kind = %v, want actionForward", act.kind)
 	}
-	if act.clientRequestID != 0xbeef {
-		t.Fatalf("clientRequestID = %#x, want 0xbeef", act.clientRequestID)
-	}
-	if gotName := act.question.Name.String(); gotName != "example.com." {
-		t.Fatalf("canonical question name = %q, want %q", gotName, "example.com.")
-	}
-
-	upstream1 := &net.UDPAddr{IP: net.ParseIP("10.96.0.10"), Port: 53}
-	upstream2 := &net.UDPAddr{IP: net.ParseIP("10.96.0.11"), Port: 53}
-	wrongUpstream := &net.UDPAddr{IP: net.ParseIP("10.96.0.99"), Port: 53}
-	clientAddr := &net.UDPAddr{IP: net.ParseIP("169.254.0.2"), Port: 54321}
-
-	rewritten := bytes.Clone(query)
-	upstreamID, ok := pending.record(rewritten, act.clientRequestID, act.question, clientAddr, []string{upstream1.String(), upstream2.String()}, act.hasSlot)
-	if !ok {
-		t.Fatal("pending.record failed")
+	rewritten := act.payload
+	upstreamID := act.upstreamID
+	if gotID := binary.BigEndian.Uint16(rewritten[0:2]); gotID != upstreamID {
+		t.Fatalf("payload ID = %#x, want upstreamID %#x", gotID, upstreamID)
 	}
 
 	// 1. Response with QR == 0 is dropped.

@@ -204,3 +204,69 @@ func TestTCPHandlerSynthesizedReplyAndHalfClose(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestTCPHandlerSlidingIdleTimeout(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lis.Close() })
+
+	go func() {
+		for {
+			conn, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				for {
+					q, err := protocol.ReadTCPFrame(conn)
+					if err != nil {
+						return
+					}
+					if err := protocol.WriteTCPFrame(conn, dnsAnswer(q, 0)); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+
+	const idleTimeout = 80 * time.Millisecond
+	addr := startTestTCPHandler(t, []string{lis.Addr().String()}, func(h *tcpHandler, _ *dnsHandler) {
+		h.tcpTimeout = idleTimeout
+	})
+
+	conn, err := net.Dial("tcp", addr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Send 3 queries spaced by half the idleTimeout (total elapsed ~1.5x idleTimeout).
+	// Because each read/write refreshes the deadline, the connection stays alive.
+	for i := range 3 {
+		if i > 0 {
+			time.Sleep(idleTimeout / 2)
+		}
+		id := uint16(0x3000 + i)
+		if err := protocol.WriteTCPFrame(conn, dnsQuery(id)); err != nil {
+			t.Fatalf("query %d write failed: %v", i, err)
+		}
+		resp, err := protocol.ReadTCPFrame(conn)
+		if err != nil {
+			t.Fatalf("query %d read failed: %v", i, err)
+		}
+		if got := binary.BigEndian.Uint16(resp[0:2]); got != id {
+			t.Errorf("query %d response ID = %#x, want %#x", i, got, id)
+		}
+	}
+
+	// Now leave the connection idle past idleTimeout; the handler should close it.
+	var buf [1]byte
+	if _, err := conn.Read(buf[:]); err == nil {
+		t.Error("expected idle connection to be closed after timeout, but Read succeeded")
+	}
+}
