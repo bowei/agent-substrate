@@ -26,19 +26,6 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
-// pendingKey identifies an in-flight request by its rewritten upstream
-// transaction ID and the expected upstream source address.
-//
-// TODO(bowei): inUse guarantees upstreamID is globally unique across in-flight
-// requests, so entries can be keyed by upstreamID directly (eliminating map
-// re-keying on failover and the linear scan in failOverOnSendError).
-type pendingKey struct {
-	// upstreamID is the rewritten DNS transaction ID sent to the upstream.
-	upstreamID uint16
-	// transportSource is the normalized "ip:port" of the active upstream.
-	transportSource string
-}
-
 // pendingRequest holds the per-query state needed to validate UDP responses,
 // restore the actor's transaction ID, and fail over across upstreams.
 type pendingRequest struct {
@@ -64,7 +51,7 @@ type pendingRequest struct {
 	hasSlot bool
 }
 
-// pendingRequests maps (upstreamID, transportSource) to in-flight requests.
+// pendingRequests maps upstreamID to in-flight UDP requests.
 //
 // TODO(bowei): move the response lookup and failover transition in
 // dnsHandler.onUDPResponse into a method on pendingRequests so all lock and
@@ -72,9 +59,8 @@ type pendingRequest struct {
 type pendingRequests struct {
 	// mu guards entries and inUse.
 	mu sync.Mutex
-	// entries maps active (upstreamID, transportSource) keys to in-flight
-	// requests.
-	entries map[pendingKey]*pendingRequest
+	// entries maps active upstreamID keys to in-flight requests.
+	entries map[uint16]*pendingRequest
 	// inUse tracks allocated 16-bit upstream transaction IDs.
 	inUse freemap.Map64k
 	// limiter tracks in-flight request slots released when entries are removed.
@@ -92,7 +78,7 @@ type pendingRequests struct {
 // in-flight slot accounting.
 func newPendingRequests(lim *limiter) *pendingRequests {
 	return &pendingRequests{
-		entries:         make(map[pendingKey]*pendingRequest),
+		entries:         make(map[uint16]*pendingRequest),
 		limiter:         lim,
 		exchangeTimeout: dnsExchangeTimeout,
 	}
@@ -117,7 +103,7 @@ func (p *pendingRequests) timeoutForAttempt(upstreamIdx int, numUpstreams int) t
 }
 
 // record allocates a unique upstreamID and stores a pendingRequest entry for
-// upstreams[0].It takes ownership of releasing the caller's hasSlot in-flight
+// upstreams[0]. It takes ownership of releasing the caller's hasSlot in-flight
 // slot on failure or entry removal.
 func (p *pendingRequests) record(
 	raw []byte,
@@ -142,13 +128,8 @@ func (p *pendingRequests) record(
 
 	// Rewrite the packet's transaction ID in place and clone it for failover retries.
 	protocol.SetTxnID(raw, upstreamID)
-	source := normalizeAddrString(upstreams[0])
-	key := pendingKey{
-		upstreamID:      upstreamID,
-		transportSource: source,
-	}
 	p.inUse.Set(upstreamID)
-	p.entries[key] = &pendingRequest{
+	p.entries[upstreamID] = &pendingRequest{
 		clientRequestID: clientReqID,
 		clientAddr:      clientAddr,
 		question:        q,
@@ -162,11 +143,11 @@ func (p *pendingRequests) record(
 	return upstreamID, true
 }
 
-// deleteEntryLocked removes key from entries, frees its upstreamID, and
+// deleteEntryLocked removes upstreamID from entries, frees its ID in inUse, and
 // releases its in-flight slot at most once. p.mu must be held.
-func (p *pendingRequests) deleteEntryLocked(key pendingKey, entry *pendingRequest) {
-	delete(p.entries, key)
-	p.inUse.Clear(key.upstreamID)
+func (p *pendingRequests) deleteEntryLocked(upstreamID uint16, entry *pendingRequest) {
+	delete(p.entries, upstreamID)
+	p.inUse.Clear(upstreamID)
 	if entry.hasSlot && p.limiter != nil {
 		entry.hasSlot = false
 		p.limiter.inFlight.release()
@@ -184,33 +165,19 @@ func (p *pendingRequests) failOverOnSendError(
 
 	// Match both upstreamID and failedIdx so stale errors from earlier attempts
 	// are ignored.
-	var foundKey pendingKey
-	var entry *pendingRequest
-	for k, e := range p.entries {
-		if k.upstreamID == upstreamID && e.upstreamIdx == failedIdx {
-			foundKey = k
-			entry = e
-			break
-		}
-	}
-	if entry == nil {
+	entry, ok := p.entries[upstreamID]
+	if !ok || entry.upstreamIdx != failedIdx {
 		return 0, nil, false
 	}
 	// Drop the request if no fallback upstreams remain.
 	if entry.upstreamIdx+1 >= len(entry.upstreams) {
-		p.deleteEntryLocked(foundKey, entry)
+		p.deleteEntryLocked(upstreamID, entry)
 		return 0, nil, false
 	}
 
-	// Re-key the entry to the next upstream and reset its attempt deadline.
-	delete(p.entries, foundKey)
+	// Advance the entry to the next upstream and reset its attempt deadline.
 	entry.upstreamIdx++
 	entry.expiry = time.Now().Add(p.timeoutForAttempt(entry.upstreamIdx, len(entry.upstreams)))
-	nextKey := pendingKey{
-		upstreamID:      upstreamID,
-		transportSource: normalizeAddrString(entry.upstreams[entry.upstreamIdx]),
-	}
-	p.entries[nextKey] = entry
 	return entry.upstreamIdx, entry.rawQuery, true
 }
 
@@ -219,8 +186,8 @@ func (p *pendingRequests) clearAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for key, entry := range p.entries {
-		p.deleteEntryLocked(key, entry)
+	for upstreamID, entry := range p.entries {
+		p.deleteEntryLocked(upstreamID, entry)
 	}
 }
 
@@ -248,24 +215,16 @@ func (p *pendingRequests) sweep(now time.Time) ([]reqFailover, []reqDelivery) {
 	var failovers []reqFailover
 	var deliveries []reqDelivery
 
-	for key, entry := range p.entries {
+	for upstreamID, entry := range p.entries {
 		if entry.expiry.IsZero() || !now.After(entry.expiry) {
 			continue
 		}
 		// Advance to the next upstream if fallbacks remain.
-		// TODO(bowei): avoid inserting nextKey into p.entries while ranging over it
-		// (resolved once entries is keyed by upstreamID).
 		if entry.upstreamIdx+1 < len(entry.upstreams) {
-			delete(p.entries, key)
 			entry.upstreamIdx++
 			entry.expiry = now.Add(p.timeoutForAttempt(entry.upstreamIdx, len(entry.upstreams)))
-			nextKey := pendingKey{
-				upstreamID:      key.upstreamID,
-				transportSource: normalizeAddrString(entry.upstreams[entry.upstreamIdx]),
-			}
-			p.entries[nextKey] = entry
 			failovers = append(failovers, reqFailover{
-				upstreamID:  key.upstreamID,
+				upstreamID:  upstreamID,
 				upstreamIdx: entry.upstreamIdx,
 				query:       entry.rawQuery,
 			})
@@ -275,7 +234,7 @@ func (p *pendingRequests) sweep(now time.Time) ([]reqFailover, []reqDelivery) {
 		// All upstreams exhausted: evict the entry and deliver any held-back
 		// error response (e.g. SERVFAIL from an earlier upstream) with the
 		// actor's original transaction ID restored.
-		p.deleteEntryLocked(key, entry)
+		p.deleteEntryLocked(upstreamID, entry)
 		if entry.deferredResp != nil && entry.clientAddr != nil {
 			resp := bytes.Clone(entry.deferredResp)
 			protocol.SetTxnID(resp, entry.clientRequestID)

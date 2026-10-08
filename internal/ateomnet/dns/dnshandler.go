@@ -191,19 +191,14 @@ func (h *dnsHandler) onUDPResponse(raw []byte, from net.Addr) action {
 		return action{kind: actionDrop}
 	}
 
-	key := pendingKey{
-		upstreamID:      hdr.ID,
-		transportSource: normalizeAddr(from),
-	}
-
 	h.pending.mu.Lock()
 	defer h.pending.mu.Unlock()
 
 	// Look for request in the pending table.
-	entry, ok := h.pending.entries[key]
+	entry, ok := h.pending.entries[hdr.ID]
 	cq := canonicalizeQuestion(q)
 
-	if !ok || entry.question != cq {
+	if !ok || normalizeAddrString(entry.upstreams[entry.upstreamIdx]) != normalizeAddr(from) || entry.question != cq {
 		// Response does not match any pending request.
 		return action{kind: actionDrop}
 	}
@@ -212,14 +207,8 @@ func (h *dnsHandler) onUDPResponse(raw []byte, from net.Addr) action {
 	// upstreams to try.
 	if isFailoverRCode(hdr.RCode) && entry.upstreamIdx+1 < len(entry.upstreams) {
 		entry.deferredResp = bytes.Clone(raw)
-		delete(h.pending.entries, key)
 		entry.upstreamIdx++
 		entry.expiry = time.Now().Add(h.pending.timeoutForAttempt(entry.upstreamIdx, len(entry.upstreams)))
-		nextKey := pendingKey{
-			upstreamID:      hdr.ID,
-			transportSource: normalizeAddrString(entry.upstreams[entry.upstreamIdx]),
-		}
-		h.pending.entries[nextKey] = entry
 
 		return action{
 			kind:        actionFailover,
@@ -231,7 +220,7 @@ func (h *dnsHandler) onUDPResponse(raw []byte, from net.Addr) action {
 	// Forward response to Actor.
 	clientID := entry.clientRequestID
 	clientAddr := entry.clientAddr
-	h.pending.deleteEntryLocked(key, entry)
+	h.pending.deleteEntryLocked(hdr.ID, entry)
 
 	out := bytes.Clone(raw)
 	binary.BigEndian.PutUint16(out[0:2], clientID)

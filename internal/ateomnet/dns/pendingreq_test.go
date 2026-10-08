@@ -143,9 +143,9 @@ func TestPendingRequestsRecord(t *testing.T) {
 	if got := binary.BigEndian.Uint16(raw[0:2]); got != id {
 		t.Errorf("query ID = %#x, want the upstream ID %#x", got, id)
 	}
-	entry, ok := p.entries[pendingKey{upstreamID: id, transportSource: "10.96.0.10:53"}]
+	entry, ok := p.entries[id]
 	if !ok {
-		t.Fatal("no entry keyed by the upstream ID and the first upstream's normalized address")
+		t.Fatal("no entry keyed by the upstream ID")
 	}
 	want := &pendingRequest{
 		clientRequestID: 0xbeef,
@@ -206,12 +206,11 @@ func TestPendingRequestsDeleteEntryReleasesSlotOnce(t *testing.T) {
 	upstreams := []string{"10.96.0.10:53"}
 	lim.inFlight.tryAcquire() // held by another query
 	id, _ := recordQuery(t, p, 0x1234, nil, upstreams)
-	key := pendingKey{upstreamID: id, transportSource: upstreams[0]}
-	entry := p.entries[key]
+	entry := p.entries[id]
 
 	p.mu.Lock()
-	p.deleteEntryLocked(key, entry)
-	p.deleteEntryLocked(key, entry)
+	p.deleteEntryLocked(id, entry)
+	p.deleteEntryLocked(id, entry)
 	p.mu.Unlock()
 
 	if len(p.entries) != 0 || p.inUse.Count() != 0 {
@@ -246,12 +245,9 @@ func TestPendingRequestsFailOverOnSendError(t *testing.T) {
 	if !bytes.Equal(query, raw) {
 		t.Error("failover query differs from the recorded query")
 	}
-	if _, ok := p.entries[pendingKey{upstreamID: id, transportSource: upstreams[0]}]; ok {
-		t.Error("entry still keyed by the failed upstream")
-	}
-	entry, ok := p.entries[pendingKey{upstreamID: id, transportSource: upstreams[1]}]
+	entry, ok := p.entries[id]
 	if !ok {
-		t.Fatal("entry not keyed by the next upstream, so its answer would be dropped")
+		t.Fatal("entry missing after failover")
 	}
 	if entry.upstreamIdx != 1 {
 		t.Errorf("upstreamIdx = %d, want 1", entry.upstreamIdx)
@@ -300,7 +296,7 @@ func TestPendingRequestsSweep(t *testing.T) {
 	p := newPendingRequests(lim)
 	upstreams := []string{"10.96.0.10:53", "10.96.0.11:53"}
 	id, raw := recordQuery(t, p, 0x1234, nil, upstreams)
-	entry := p.entries[pendingKey{upstreamID: id, transportSource: upstreams[0]}]
+	entry := p.entries[id]
 
 	if failovers, deliveries := p.sweep(entry.expiry); len(failovers) != 0 || len(deliveries) != 0 {
 		t.Fatalf("sweep at the expiry returned %d failovers and %d deliveries, want none until it has passed", len(failovers), len(deliveries))
@@ -316,8 +312,8 @@ func TestPendingRequestsSweep(t *testing.T) {
 	if len(deliveries) != 0 {
 		t.Errorf("sweep returned %d deliveries on failover, want 0", len(deliveries))
 	}
-	if len(p.entries) != 1 || p.entries[pendingKey{upstreamID: id, transportSource: upstreams[1]}] != entry {
-		t.Fatal("entry not re-keyed to the next upstream")
+	if len(p.entries) != 1 || p.entries[id] != entry || entry.upstreamIdx != 1 {
+		t.Fatal("entry not advanced to the next upstream")
 	}
 	if want := now.Add(p.timeoutForAttempt(1, len(upstreams))); !entry.expiry.Equal(want) {
 		t.Errorf("expiry = %v, want %v", entry.expiry, want)
@@ -350,7 +346,7 @@ func TestPendingRequestsSweepDeliversDeferredAnswer(t *testing.T) {
 	if _, _, ok := p.failOverOnSendError(id, 0); !ok {
 		t.Fatal("failOverOnSendError failed")
 	}
-	entry := p.entries[pendingKey{upstreamID: id, transportSource: upstreams[1]}]
+	entry := p.entries[id]
 	entry.deferredResp = dnsAnswer(raw, byte(dnsmessage.RCodeServerFailure))
 
 	failovers, deliveries := p.sweep(entry.expiry.Add(time.Nanosecond))

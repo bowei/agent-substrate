@@ -15,7 +15,7 @@ Actor DNS relays DNS requests from the actor to the external world.
 
 - `Server.pendingRequests` map (UDP only):
   - Allocates a rewritten `upstreamID` (`uint16`) per in-flight UDP query to avoid transaction ID collisions across different actor source ports on the shared egress socket (and prevent predictable upstream IDs).
-  - Maps `(upstreamID, transportSource)` -> pending request entry:
+  - Maps `upstreamID` -> pending request entry:
     - `clientRequestID` (`uint16`) and `clientAddr` (`net.Addr`) to restore the original ID and route the response back.
     - Question metadata (`QNAME`, `QTYPE`, `QCLASS`) to validate that the response matches the query (RFC 5452).
     - `upstreamIdx` and `deferredResp` to track multi-upstream failover (`SERVFAIL`, `NOTIMP`, `REFUSED`, or timeout) and return the last failure response if all upstreams fail.
