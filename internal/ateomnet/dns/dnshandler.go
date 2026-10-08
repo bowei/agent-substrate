@@ -74,10 +74,10 @@ func newDNSHandler(pending *pendingRequests, lim *limiter, allow queryPolicy) *d
 	}
 }
 
-// validateRequest checks packet structure and policy, returning actionDrop,
+// onRequestCommon checks packet structure and policy, returning actionDrop,
 // actionReply (with a synthesized error response), or actionForward along with
 // the parsed header and canonicalized question.
-func (h *dnsHandler) validateRequest(raw []byte) (dnsmessage.Header, dnsmessage.Question, action) {
+func (h *dnsHandler) onRequestCommon(raw []byte) (dnsmessage.Header, dnsmessage.Question, action) {
 	if !protocol.RequestSanityCheck(raw) {
 		return dnsmessage.Header{}, dnsmessage.Question{}, action{kind: actionDrop}
 	}
@@ -133,10 +133,6 @@ func (h *dnsHandler) validateRequest(raw []byte) (dnsmessage.Header, dnsmessage.
 // returns whether to drop it, reply immediately with a synthesized error, or
 // record and forward it to an upstream resolver.
 func (h *dnsHandler) onUDPRequest(raw []byte, clientAddr net.Addr, upstreams []string) action {
-	if !protocol.RequestSanityCheck(raw) {
-		return action{kind: actionDrop}
-	}
-
 	hasSlot := false
 	forwarded := false
 
@@ -153,7 +149,7 @@ func (h *dnsHandler) onUDPRequest(raw []byte, clientAddr net.Addr, upstreams []s
 		return action{kind: actionDrop}
 	}
 
-	hdr, cq, act := h.validateRequest(raw)
+	hdr, cq, act := h.onRequestCommon(raw)
 	if act.kind != actionForward {
 		return act
 	}
@@ -236,7 +232,7 @@ func (h *dnsHandler) onUDPResponse(raw []byte, from net.Addr) action {
 // returns whether to drop it, reply immediately with a synthesized error, or
 // forward it unmodified on the connection's dedicated upstream stream.
 func (h *dnsHandler) onTCPRequest(raw []byte) action {
-	_, _, act := h.validateRequest(raw)
+	_, _, act := h.onRequestCommon(raw)
 	return act
 }
 
