@@ -93,7 +93,7 @@ func (h *dnsHandler) onRequest(raw []byte, clientSource any, upstreams []string)
 	if h.limiter.inFlight.tryAcquire() {
 		hasSlot = true
 	} else {
-		slog.Debug("dns relay dropped a DNS query; too many in flight")
+		slog.Debug("dns relay dropped query; too many in flight")
 		return action{kind: actionDrop}
 	}
 
