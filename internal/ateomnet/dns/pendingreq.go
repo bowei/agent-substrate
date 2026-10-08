@@ -148,7 +148,7 @@ func (p *pendingRequests) record(
 func (p *pendingRequests) deleteEntryLocked(upstreamID uint16, entry *pendingRequest) {
 	delete(p.entries, upstreamID)
 	p.inUse.Clear(upstreamID)
-	if entry.hasSlot && p.limiter != nil {
+	if entry.hasSlot {
 		entry.hasSlot = false
 		p.limiter.inFlight.release()
 	}
