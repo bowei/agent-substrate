@@ -133,30 +133,26 @@ func (h *dnsHandler) onRequestCommon(raw []byte) (dnsmessage.Header, dnsmessage.
 // returns whether to drop it, reply immediately with a synthesized error, or
 // record and forward it to an upstream resolver.
 func (h *dnsHandler) onUDPRequest(raw []byte, clientAddr net.Addr, upstreams []string) action {
-	hasSlot := false
-	forwarded := false
-
-	defer func() {
-		if !forwarded && hasSlot {
-			h.limiter.inFlight.release()
-		}
-	}()
-
-	if h.limiter.inFlight.tryAcquire() {
-		hasSlot = true
-	} else {
+	if !h.limiter.inFlight.tryAcquire() {
 		slog.Debug("dns relay dropped query; too many in flight")
 		return action{kind: actionDrop}
 	}
+
+	forwarded := false
+	defer func() {
+		if !forwarded {
+			h.limiter.inFlight.release()
+		}
+	}()
 
 	hdr, cq, act := h.onRequestCommon(raw)
 	if act.kind != actionForward {
 		return act
 	}
 
-	// Set to true before calling record, which takes ownership of hasSlot.
+	// Set to true before calling record, which takes ownership of the in-flight slot.
 	forwarded = true
-	upstreamID, ok := h.pending.record(raw, hdr.ID, cq, clientAddr, upstreams, hasSlot)
+	upstreamID, ok := h.pending.record(raw, hdr.ID, cq, clientAddr, upstreams)
 	if !ok {
 		return action{kind: actionDrop}
 	}
@@ -216,7 +212,7 @@ func (h *dnsHandler) onUDPResponse(raw []byte, from net.Addr) action {
 	// Forward response to Actor.
 	clientID := entry.clientRequestID
 	clientAddr := entry.clientAddr
-	h.pending.deleteEntryLocked(hdr.ID, entry)
+	h.pending.deleteEntryLocked(hdr.ID)
 
 	out := bytes.Clone(raw)
 	binary.BigEndian.PutUint16(out[0:2], clientID)

@@ -47,8 +47,6 @@ type pendingRequest struct {
 	deferredResp []byte
 	// expiry is the deadline for the current upstream attempt.
 	expiry time.Time
-	// hasSlot reports whether this request holds an inFlight limiter slot.
-	hasSlot bool
 }
 
 // pendingRequests maps upstreamID to in-flight UDP requests.
@@ -103,15 +101,14 @@ func (p *pendingRequests) timeoutForAttempt(upstreamIdx int, numUpstreams int) t
 }
 
 // record allocates a unique upstreamID and stores a pendingRequest entry for
-// upstreams[0]. It takes ownership of releasing the caller's hasSlot in-flight
-// slot on failure or entry removal.
+// upstreams[0]. It takes ownership of releasing the caller's in-flight slot on
+// failure or entry removal.
 func (p *pendingRequests) record(
 	raw []byte,
 	clientReqID uint16,
 	q dnsmessage.Question,
 	clientAddr net.Addr,
 	upstreams []string,
-	hasSlot bool,
 ) (uint16, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -120,9 +117,7 @@ func (p *pendingRequests) record(
 	start := uint16(rand.Uint32())
 	upstreamID, ok := p.inUse.FindFirstUnsetFrom(start)
 	if !ok {
-		if hasSlot {
-			p.limiter.inFlight.release()
-		}
+		p.limiter.inFlight.release()
 		return 0, false
 	}
 
@@ -137,21 +132,20 @@ func (p *pendingRequests) record(
 		upstreams:       upstreams,
 		upstreamIdx:     0,
 		expiry:          time.Now().Add(p.timeoutForAttempt(0, len(upstreams))),
-		hasSlot:         hasSlot,
 	}
 
 	return upstreamID, true
 }
 
 // deleteEntryLocked removes upstreamID from entries, frees its ID in inUse, and
-// releases its in-flight slot at most once. p.mu must be held.
-func (p *pendingRequests) deleteEntryLocked(upstreamID uint16, entry *pendingRequest) {
+// releases its in-flight slot if upstreamID was present. p.mu must be held.
+func (p *pendingRequests) deleteEntryLocked(upstreamID uint16) {
+	if _, ok := p.entries[upstreamID]; !ok {
+		return
+	}
 	delete(p.entries, upstreamID)
 	p.inUse.Clear(upstreamID)
-	if entry.hasSlot {
-		entry.hasSlot = false
-		p.limiter.inFlight.release()
-	}
+	p.limiter.inFlight.release()
 }
 
 // failOverOnSendError advances an entry to the next upstream when sending to
@@ -171,7 +165,7 @@ func (p *pendingRequests) failOverOnSendError(
 	}
 	// Drop the request if no fallback upstreams remain.
 	if entry.upstreamIdx+1 >= len(entry.upstreams) {
-		p.deleteEntryLocked(upstreamID, entry)
+		p.deleteEntryLocked(upstreamID)
 		return 0, nil, false
 	}
 
@@ -186,8 +180,8 @@ func (p *pendingRequests) clearAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for upstreamID, entry := range p.entries {
-		p.deleteEntryLocked(upstreamID, entry)
+	for upstreamID := range p.entries {
+		p.deleteEntryLocked(upstreamID)
 	}
 }
 
@@ -234,7 +228,7 @@ func (p *pendingRequests) sweep(now time.Time) ([]reqFailover, []reqDelivery) {
 		// All upstreams exhausted: evict the entry and deliver any held-back
 		// error response (e.g. SERVFAIL from an earlier upstream) with the
 		// actor's original transaction ID restored.
-		p.deleteEntryLocked(upstreamID, entry)
+		p.deleteEntryLocked(upstreamID)
 		if entry.deferredResp != nil && entry.clientAddr != nil {
 			resp := bytes.Clone(entry.deferredResp)
 			protocol.SetTxnID(resp, entry.clientRequestID)

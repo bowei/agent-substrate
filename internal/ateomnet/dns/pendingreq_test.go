@@ -39,7 +39,7 @@ func recordQuery(t *testing.T, p *pendingRequests, clientID uint16, client net.A
 	t.Helper()
 	p.limiter.inFlight.tryAcquire()
 	raw := dnsQuery(clientID)
-	id, ok := p.record(raw, clientID, exampleQuestion, client, upstreams, true)
+	id, ok := p.record(raw, clientID, exampleQuestion, client, upstreams)
 	if !ok {
 		t.Fatalf("record(%#x) failed", clientID)
 	}
@@ -135,7 +135,7 @@ func TestPendingRequestsRecord(t *testing.T) {
 	lim.inFlight.tryAcquire()
 	raw := dnsQuery(0xbeef)
 	before := time.Now()
-	id, ok := p.record(raw, 0xbeef, exampleQuestion, client, upstreams, true)
+	id, ok := p.record(raw, 0xbeef, exampleQuestion, client, upstreams)
 	after := time.Now()
 	if !ok {
 		t.Fatal("record failed")
@@ -153,7 +153,6 @@ func TestPendingRequestsRecord(t *testing.T) {
 		question:        exampleQuestion,
 		rawQuery:        raw,
 		upstreams:       upstreams,
-		hasSlot:         true,
 	}
 	if diff := cmp.Diff(want, entry, cmp.AllowUnexported(pendingRequest{}), cmpopts.IgnoreFields(pendingRequest{}, "expiry")); diff != "" {
 		t.Errorf("entry mismatch (-want +got):\n%s", diff)
@@ -192,7 +191,7 @@ func TestPendingRequestsRecordAllocatesFreeID(t *testing.T) {
 
 	// With every ID in flight, record fails and frees the query's slot.
 	lim.inFlight.tryAcquire()
-	if _, ok := p.record(dnsQuery(0x5678), 0x5678, exampleQuestion, nil, upstreams, true); ok {
+	if _, ok := p.record(dnsQuery(0x5678), 0x5678, exampleQuestion, nil, upstreams); ok {
 		t.Fatal("record succeeded with every upstream ID in flight")
 	}
 	if got := lim.inFlight.occupied(); got != 1 {
@@ -206,11 +205,10 @@ func TestPendingRequestsDeleteEntryReleasesSlotOnce(t *testing.T) {
 	upstreams := []string{"10.96.0.10:53"}
 	lim.inFlight.tryAcquire() // held by another query
 	id, _ := recordQuery(t, p, 0x1234, nil, upstreams)
-	entry := p.entries[id]
 
 	p.mu.Lock()
-	p.deleteEntryLocked(id, entry)
-	p.deleteEntryLocked(id, entry)
+	p.deleteEntryLocked(id)
+	p.deleteEntryLocked(id)
 	p.mu.Unlock()
 
 	if len(p.entries) != 0 || p.inUse.Count() != 0 {
