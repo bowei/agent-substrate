@@ -46,7 +46,8 @@ type pendingRequest struct {
 	clientRequestID uint16
 	// clientAddr identifies the actor UDP endpoint.
 	clientAddr net.Addr
-	// question is the canonicalized DNS question used to validate responses (RFC 5452).
+	// question is the canonicalized DNS question used to validate responses
+	// (RFC 5452).
 	question dnsmessage.Question
 	// rawQuery is a copy of the query with upstreamID written to bytes 0..1.
 	rawQuery []byte
@@ -54,8 +55,8 @@ type pendingRequest struct {
 	upstreams []string
 	// upstreamIdx is the index in upstreams of the current attempt.
 	upstreamIdx int
-	// deferredResp holds the last failover-eligible error response (e.g. SERVFAIL)
-	// to return if all remaining upstreams time out.
+	// deferredResp holds the last failover-eligible error response (e.g.
+	// SERVFAIL) to return if all remaining upstreams time out.
 	deferredResp []byte
 	// expiry is the deadline for the current upstream attempt.
 	expiry time.Time
@@ -66,21 +67,24 @@ type pendingRequest struct {
 // pendingRequests maps (upstreamID, transportSource) to in-flight requests.
 //
 // TODO(bowei): move the response lookup and failover transition in
-// dnsHandler.onUDPResponse into a method on pendingRequests so all lock and state
-// transitions live in this file.
+// dnsHandler.onUDPResponse into a method on pendingRequests so all lock and
+// state transitions live in this file.
 type pendingRequests struct {
 	// mu guards entries and inUse.
 	mu sync.Mutex
-	// entries maps active (upstreamID, transportSource) keys to in-flight requests.
+	// entries maps active (upstreamID, transportSource) keys to in-flight
+	// requests.
 	entries map[pendingKey]*pendingRequest
 	// inUse tracks allocated 16-bit upstream transaction IDs.
 	inUse freemap.Map64k
 	// limiter tracks in-flight request slots released when entries are removed.
 	limiter *limiter
 
-	// exchangeTimeout bounds the total upstream exchange (defaults to dnsExchangeTimeout).
+	// exchangeTimeout bounds the total upstream exchange (defaults to
+	// dnsExchangeTimeout).
 	exchangeTimeout time.Duration
-	// attemptTimeout, if positive, overrides the per-attempt timeout (used in tests).
+	// attemptTimeout, if positive, overrides the per-attempt timeout (used in
+	// tests).
 	attemptTimeout time.Duration
 }
 
@@ -95,9 +99,9 @@ func newPendingRequests(lim *limiter) *pendingRequests {
 }
 
 // timeoutForAttempt returns the deadline duration for attempt upstreamIdx out
-// of numUpstreams. Attempts with fallback upstreams remaining get an equal share
-// of exchangeTimeout capped at defaultUpstreamAttemptTimeout; the final upstream
-// gets the full exchangeTimeout.
+// of numUpstreams. Attempts with fallback upstreams remaining get an equal
+// share of exchangeTimeout capped at defaultUpstreamAttemptTimeout; the final
+// upstream gets the full exchangeTimeout.
 func (p *pendingRequests) timeoutForAttempt(upstreamIdx int, numUpstreams int) time.Duration {
 	if p.attemptTimeout > 0 {
 		return p.attemptTimeout
@@ -178,7 +182,8 @@ func (p *pendingRequests) failOverOnSendError(
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Match both upstreamID and failedIdx so stale errors from earlier attempts are ignored.
+	// Match both upstreamID and failedIdx so stale errors from earlier attempts
+	// are ignored.
 	var foundKey pendingKey
 	var entry *pendingRequest
 	for k, e := range p.entries {
@@ -226,8 +231,8 @@ type reqFailover struct {
 	query       []byte
 }
 
-// reqDelivery describes a deferred response to send back to the actor after
-// all upstreams have been exhausted.
+// reqDelivery describes a deferred response to send back to the actor after all
+// upstreams have been exhausted.
 type reqDelivery struct {
 	clientAddr net.Addr
 	payload    []byte

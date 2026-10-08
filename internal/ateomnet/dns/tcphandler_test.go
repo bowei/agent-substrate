@@ -269,3 +269,25 @@ func TestTCPHandlerSlidingIdleTimeout(t *testing.T) {
 		t.Error("expected idle connection to be closed after timeout, but Read succeeded")
 	}
 }
+
+func TestTCPHandlerClosesOnDroppedFrame(t *testing.T) {
+	upstream, _ := newHeldTCPResolver(t)
+	addr := startTestTCPHandler(t, []string{upstream}, nil)
+
+	conn, err := net.Dial("tcp", addr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Send an invalid (< 12 byte) DNS frame that triggers actionDrop.
+	if err := protocol.WriteTCPFrame(conn, []byte{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf [1]byte
+	if _, err := conn.Read(buf[:]); err == nil {
+		t.Error("expected connection to be closed after dropped frame, but Read succeeded")
+	}
+}

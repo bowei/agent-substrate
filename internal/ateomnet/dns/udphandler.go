@@ -124,7 +124,7 @@ func (h *udpHandler) readFromActor(ctx context.Context) error {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			return fmt.Errorf("dns: reading actor DNS query: %w", err)
+			return fmt.Errorf("dns relay: reading actor DNS query: %w", err)
 		}
 		raw := bytes.Clone(buf[:n])
 		act := h.dns.onUDPRequest(raw, from, h.upstreamStrs)
@@ -133,7 +133,7 @@ func (h *udpHandler) readFromActor(ctx context.Context) error {
 			continue
 		case actionReply:
 			if _, err := h.actorSock.WriteTo(act.payload, from); err != nil && ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
-				slog.WarnContext(ctx, "dns relay could not return a synthesized DNS reply", slog.Any("err", err))
+				slog.WarnContext(ctx, "dns relay: could not return a synthesized DNS reply", slog.Any("err", err))
 			}
 		case actionForward:
 			h.sendToUpstream(ctx, act.upstreamID, 0, act.payload)
@@ -170,7 +170,7 @@ func (h *udpHandler) readFromUpstream(ctx context.Context) error {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			slog.DebugContext(ctx, "dns relay upstream socket read error", slog.Any("err", err))
+			slog.DebugContext(ctx, "dns relay: upstream socket read error", slog.Any("err", err))
 			continue
 		}
 		raw := bytes.Clone(buf[:n])
@@ -186,7 +186,7 @@ func (h *udpHandler) readFromUpstream(ctx context.Context) error {
 		case actionDeliver:
 			if act.clientAddr != nil {
 				if _, err := h.actorSock.WriteTo(act.payload, act.clientAddr); err != nil && ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
-					slog.WarnContext(ctx, "dns relay could not return a DNS answer", slog.Any("err", err))
+					slog.WarnContext(ctx, "dns relay: could not return a DNS answer", slog.Any("err", err))
 				}
 			}
 		}
@@ -212,7 +212,7 @@ func (h *udpHandler) sweepLoop(ctx context.Context) {
 			}
 			for _, d := range deliveries {
 				if _, err := h.actorSock.WriteTo(d.payload, d.clientAddr); err != nil && ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
-					slog.WarnContext(ctx, "dns relay could not return a deferred DNS answer", slog.Any("err", err))
+					slog.WarnContext(ctx, "dns relay: could not return a deferred DNS answer", slog.Any("err", err))
 				}
 			}
 		}

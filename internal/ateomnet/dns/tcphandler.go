@@ -85,7 +85,7 @@ func (h *tcpHandler) serve(ctx context.Context) error {
 			return fmt.Errorf("dns: accepting actor DNS connection: %w", err)
 		}
 		if !h.limiter.connections.tryAcquire() {
-			slog.DebugContext(ctx, "dns relay refused a DNS connection; too many open")
+			slog.DebugContext(ctx, "dns relay: refusing connection, at limit")
 			_ = conn.Close()
 			continue
 
@@ -127,7 +127,7 @@ func (h *tcpHandler) onConnect(ctx context.Context, downstream net.Conn) {
 		break
 	}
 	if upstream == nil {
-		slog.WarnContext(ctx, "dns relay could not reach any resolver for an actor DNS connection", slog.Any("err", errs))
+		slog.WarnContext(ctx, "dns relay: could not reach any upstream", slog.Any("err", errs))
 		return
 	}
 	defer upstream.Close()
@@ -181,12 +181,14 @@ func (h *tcpHandler) processRequests(
 
 		switch act.kind {
 		case actionDrop:
-			// TODO: we should close the connect as this is an error.
-			continue
+			slog.DebugContext(ctx, "dns relay: dropping request and closing stream")
+			_ = upstream.Close()
+			_ = client.conn.Close()
+			return
 		case actionReply:
 			if err := client.writeFrame(act.payload); err != nil {
 				if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
-					slog.DebugContext(ctx, "dns relay could not write synthesized TCP reply", slog.Any("err", err))
+					slog.DebugContext(ctx, "dns relay: error on TCP reply", slog.Any("err", err))
 				}
 				_ = upstream.Close()
 				_ = client.conn.Close()
@@ -196,7 +198,7 @@ func (h *tcpHandler) processRequests(
 		case actionForward:
 			if err := protocol.WriteTCPFrame(upstream, act.payload); err != nil {
 				if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
-					slog.WarnContext(ctx, "dns relay could not forward TCP DNS query", slog.Any("err", err))
+					slog.WarnContext(ctx, "dns relay: error in forward", slog.Any("err", err))
 				}
 				_ = upstream.Close()
 				_ = client.conn.Close()
@@ -228,7 +230,9 @@ func (h *tcpHandler) processResponses(
 		act := h.dns.onTCPResponse(raw)
 		switch act.kind {
 		case actionDrop:
-			continue
+			_ = upstream.Close()
+			_ = client.conn.Close()
+			return
 		case actionDeliver:
 			if err := client.writeFrame(act.payload); err != nil {
 				if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
