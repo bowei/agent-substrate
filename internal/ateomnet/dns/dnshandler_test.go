@@ -20,6 +20,7 @@ import (
 	"net"
 	"testing"
 
+	"github.com/agent-substrate/substrate/internal/ateomnet/dns/protocol"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -142,7 +143,7 @@ func TestDNSHandlerOnRequestSynthesizedReplies(t *testing.T) {
 				RecursionDesired: true,
 			}, []dnsmessage.Question{{
 				Name:  dnsmessage.MustNewName("example.com."),
-				Type:  typeIXFR,
+				Type:  protocol.TypeIXFR,
 				Class: dnsmessage.ClassINET,
 			}}),
 			wantRCode: dnsmessage.RCodeNotImplemented,

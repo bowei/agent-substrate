@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-substrate/substrate/internal/ateomnet/dns/protocol"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -73,17 +74,17 @@ func newOutOfOrderTCPResolver(t *testing.T) string {
 			}
 			go func() {
 				defer conn.Close()
-				q1, err := readTCPFrame(conn)
+				q1, err := protocol.ReadTCPFrame(conn)
 				if err != nil {
 					return
 				}
-				q2, err := readTCPFrame(conn)
+				q2, err := protocol.ReadTCPFrame(conn)
 				if err != nil {
 					return
 				}
 				// Respond to q2 first, then q1.
-				_ = writeTCPFrame(conn, dnsAnswer(q2, 0))
-				_ = writeTCPFrame(conn, dnsAnswer(q1, 0))
+				_ = protocol.WriteTCPFrame(conn, dnsAnswer(q2, 0))
+				_ = protocol.WriteTCPFrame(conn, dnsAnswer(q1, 0))
 			}()
 		}
 	}()
@@ -101,18 +102,18 @@ func TestTCPHandlerPipeliningAndOutOfOrderResponses(t *testing.T) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	if err := writeTCPFrame(conn, dnsQuery(0x1111)); err != nil {
+	if err := protocol.WriteTCPFrame(conn, dnsQuery(0x1111)); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeTCPFrame(conn, dnsQuery(0x2222)); err != nil {
+	if err := protocol.WriteTCPFrame(conn, dnsQuery(0x2222)); err != nil {
 		t.Fatal(err)
 	}
 
-	resp1, err := readTCPFrame(conn)
+	resp1, err := protocol.ReadTCPFrame(conn)
 	if err != nil {
 		t.Fatalf("reading first response frame: %v", err)
 	}
-	resp2, err := readTCPFrame(conn)
+	resp2, err := protocol.ReadTCPFrame(conn)
 	if err != nil {
 		t.Fatalf("reading second response frame: %v", err)
 	}
@@ -141,11 +142,11 @@ func TestTCPHandlerSynthesizedReplyAndHalfClose(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		q, err := readTCPFrame(conn)
+		q, err := protocol.ReadTCPFrame(conn)
 		if err != nil {
 			return
 		}
-		_ = writeTCPFrame(conn, dnsAnswer(q, 0))
+		_ = protocol.WriteTCPFrame(conn, dnsAnswer(q, 0))
 	}()
 
 	addr := startTestTCPHandler(t, []string{lis.Addr().String()}, func(_ *tcpHandler, dnsH *dnsHandler) {
@@ -172,21 +173,21 @@ func TestTCPHandlerSynthesizedReplyAndHalfClose(t *testing.T) {
 
 	// First frame triggers a synthesized reply; second frame is forwarded, and
 	// then client half-closes its write side.
-	if err := writeTCPFrame(conn, blockedQuery); err != nil {
+	if err := protocol.WriteTCPFrame(conn, blockedQuery); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeTCPFrame(conn, dnsQuery(0x1234)); err != nil {
+	if err := protocol.WriteTCPFrame(conn, dnsQuery(0x1234)); err != nil {
 		t.Fatal(err)
 	}
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.CloseWrite()
 	}
 
-	r1, err := readTCPFrame(conn)
+	r1, err := protocol.ReadTCPFrame(conn)
 	if err != nil {
 		t.Fatalf("reading first frame: %v", err)
 	}
-	r2, err := readTCPFrame(conn)
+	r2, err := protocol.ReadTCPFrame(conn)
 	if err != nil {
 		t.Fatalf("reading second frame: %v", err)
 	}

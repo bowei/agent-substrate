@@ -21,6 +21,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/agent-substrate/substrate/internal/ateomnet/dns/protocol"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -74,36 +75,11 @@ func newDNSHandler(pending *pendingRequests, lim *limiter, allow queryPolicy) *d
 	}
 }
 
-// requestSanityCheck filters out obviously invalid packets.
-func requestSanityCheck(raw []byte) bool {
-	// DNS packets need to be at least 12 bytes.
-	const dnsHeaderLen = 12
-	if len(raw) < dnsHeaderLen {
-		return false
-	}
-	// Query/Response flag must be a query (== 0)
-	if raw[2]&0x80 != 0 {
-		return false
-	}
-	return true
-}
-
-// errReplyAction returns an Action for an error situation.
-func errReplyAction(hdr dnsmessage.Header, rcode dnsmessage.RCode, q *dnsmessage.Question) action {
-	return action{
-		kind:    actionReply,
-		payload: errorPacket(hdr, rcode, q),
-	}
-}
-
-// typeIXFR is the incremental zone transfer QTYPE (RFC 1995).
-const typeIXFR dnsmessage.Type = 251
-
 // onRequest inspects an incoming DNS query packet from the actor and returns
 // whether to drop it, reply immediately with a synthesized error, or forward it
 // to an upstream resolver.
 func (h *dnsHandler) onRequest(raw []byte) action {
-	if !requestSanityCheck(raw) {
+	if !protocol.RequestSanityCheck(raw) {
 		return action{kind: actionDrop}
 	}
 
@@ -129,7 +105,7 @@ func (h *dnsHandler) onRequest(raw []byte) action {
 		return errReplyAction(hdr, dnsmessage.RCodeFormatError, nil)
 	}
 
-	qdCount := qdCountFromRaw(raw)
+	qdCount := protocol.QDCount(raw)
 
 	// OpCode must be QUERY (== 0).
 	if hdr.OpCode != 0 {
@@ -154,7 +130,7 @@ func (h *dnsHandler) onRequest(raw []byte) action {
 	}
 
 	// Question type must be supported.
-	if q.Type == dnsmessage.TypeAXFR || q.Type == typeIXFR {
+	if q.Type == dnsmessage.TypeAXFR || q.Type == protocol.TypeIXFR {
 		return errReplyAction(hdr, dnsmessage.RCodeNotImplemented, &q)
 	}
 
@@ -175,33 +151,11 @@ func (h *dnsHandler) onRequest(raw []byte) action {
 	}
 }
 
-// responseSanityCheck filters out obviously invalid packets.
-func responseSanityCheck(raw []byte) bool {
-	// DNS packets need to be at least 12 bytes.
-	const dnsHeaderLen = 12
-	if len(raw) < dnsHeaderLen {
-		return false
-	}
-
-	// Query/Response flag must be query (!= 0)
-	if raw[2]&0x80 == 0 {
-		return false
-	}
-
-	// Must have exactly one question.
-	// Note: this may be too restrictive.
-	if qdCountFromRaw(raw) != 1 {
-		return false
-	}
-
-	return true
-}
-
 // onResponse validates an incoming DNS response packet from an upstream
 // resolver against pendingRequests and returns whether to drop it, fail over to
 // the next upstream, or deliver it to the actor.
 func (h *dnsHandler) onResponse(raw []byte, from net.Addr) action {
-	if !responseSanityCheck(raw) {
+	if !protocol.ResponseSanityCheck(raw) {
 		return action{kind: actionDrop}
 	}
 
@@ -268,6 +222,14 @@ func (h *dnsHandler) onResponse(raw []byte, from net.Addr) action {
 	}
 }
 
+// errReplyAction returns an Action for an error situation.
+func errReplyAction(hdr dnsmessage.Header, rcode dnsmessage.RCode, q *dnsmessage.Question) action {
+	return action{
+		kind:    actionReply,
+		payload: protocol.ErrorPacket(hdr, rcode, q),
+	}
+}
+
 // isFailoverRCode returns true if the response error makes sense to try with
 // the next DNS upstream server.
 func isFailoverRCode(rcode dnsmessage.RCode) bool {
@@ -290,63 +252,3 @@ func canonicalizeQuestion(q dnsmessage.Question) dnsmessage.Question {
 	clear(q.Name.Data[q.Name.Length:])
 	return q
 }
-
-// errorPacket returns a serialized DNS packet signaling an error.
-func errorPacket(hdr dnsmessage.Header, rcode dnsmessage.RCode, q *dnsmessage.Question) []byte {
-	respHdr := dnsmessage.Header{
-		ID:                 hdr.ID,
-		Response:           true,
-		OpCode:             hdr.OpCode,
-		RecursionDesired:   hdr.RecursionDesired,
-		RecursionAvailable: true,
-		RCode:              rcode,
-	}
-
-	b := dnsmessage.NewBuilder(nil, respHdr)
-	// Try to tack on the question, if possible.
-	if q != nil {
-		if err := b.StartQuestions(); err == nil {
-			_ = b.Question(*q)
-		}
-	}
-
-	out, err := b.Finish()
-	if err == nil {
-		return out
-	}
-
-	// Last ditch reply: empty DNS response apart from headers that match the
-	// request.
-	//
-	//  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                    hdr.ID                     |  bytes 0..1
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// | 1|   OpCode  | 0| 0|RD| 1|  0  0  0|   RCode  |  bytes 2..3
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                  QDCOUNT = 0                  |  bytes 4..5
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                  ANCOUNT = 0                  |  bytes 6..7
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                  NSCOUNT = 0                  |  bytes 8..9
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                  ARCOUNT = 0                  |  bytes 10..11
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	const dnsHeaderLen = 12
-	var fallback [dnsHeaderLen]byte
-	binary.BigEndian.PutUint16(fallback[0:2], hdr.ID)
-	fallback[2] = 0x80 | (byte(hdr.OpCode)&0x0f)<<3
-	if hdr.RecursionDesired {
-		fallback[2] |= 0x01
-	}
-	fallback[3] = 0x80 | (byte(rcode) & 0x0f)
-
-	return fallback[:]
-}
-
-// qdCountFromRaw from the raw packet.
-//
-// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-// |                  QDCOUNT = 0                  |  bytes 4..5
-// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-func qdCountFromRaw(raw []byte) uint16 { return binary.BigEndian.Uint16(raw[4:6]) }
