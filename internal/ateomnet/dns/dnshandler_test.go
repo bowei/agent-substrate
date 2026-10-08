@@ -54,21 +54,27 @@ func TestDNSHandlerOnRequestDrop(t *testing.T) {
 	upstreams := []string{"10.96.0.10:53"}
 
 	// 1. Short packet (< 12 bytes).
-	if act := h.onRequest([]byte{1, 2, 3, 4}, nil, upstreams); act.kind != actionDrop {
-		t.Errorf("short packet action = %v, want actionDrop", act.kind)
+	if act := h.onUDPRequest([]byte{1, 2, 3, 4}, nil, upstreams); act.kind != actionDrop {
+		t.Errorf("short UDP packet action = %v, want actionDrop", act.kind)
+	}
+	if act := h.onTCPRequest([]byte{1, 2, 3, 4}); act.kind != actionDrop {
+		t.Errorf("short TCP packet action = %v, want actionDrop", act.kind)
 	}
 
 	// 2. Packet with QR == 1 (response bit set).
 	resp := dnsAnswer(dnsQuery(0x1234), 0)
-	if act := h.onRequest(resp, nil, upstreams); act.kind != actionDrop {
-		t.Errorf("QR=1 packet action = %v, want actionDrop", act.kind)
+	if act := h.onUDPRequest(resp, nil, upstreams); act.kind != actionDrop {
+		t.Errorf("QR=1 UDP packet action = %v, want actionDrop", act.kind)
+	}
+	if act := h.onTCPRequest(resp); act.kind != actionDrop {
+		t.Errorf("QR=1 TCP packet action = %v, want actionDrop", act.kind)
 	}
 
-	// 3. Rate-limited (inFlight full).
+	// 3. Rate-limited (inFlight full) drops UDP requests.
 	lim.inFlight.tryAcquire()
 	defer lim.inFlight.release()
-	if act := h.onRequest(dnsQuery(0x1234), nil, upstreams); act.kind != actionDrop {
-		t.Errorf("rate-limited packet action = %v, want actionDrop", act.kind)
+	if act := h.onUDPRequest(dnsQuery(0x1234), nil, upstreams); act.kind != actionDrop {
+		t.Errorf("rate-limited UDP packet action = %v, want actionDrop", act.kind)
 	}
 }
 
@@ -179,32 +185,36 @@ func TestDNSHandlerOnRequestSynthesizedReplies(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			wantID := binary.BigEndian.Uint16(tc.raw[0:2])
-			act := h.onRequest(tc.raw, nil, upstreams)
-			if act.kind != actionReply {
-				t.Fatalf("action.kind = %v, want actionReply", act.kind)
-			}
-			var p dnsmessage.Parser
-			hdr, err := p.Start(act.payload)
-			if err != nil {
-				t.Fatalf("parsing synthesized reply: %v", err)
-			}
-			if hdr.ID != wantID {
-				t.Errorf("reply ID = %#x, want %#x", hdr.ID, wantID)
-			}
-			if !hdr.Response {
-				t.Error("reply QR = false, want true")
-			}
-			if hdr.RCode != tc.wantRCode {
-				t.Errorf("reply RCode = %v, want %v", hdr.RCode, tc.wantRCode)
-			}
-			if got := lim.inFlight.occupied(); got != 0 {
-				t.Errorf("inFlight slots = %d after synthesized reply, want 0", got)
+			for _, act := range []action{
+				h.onUDPRequest(tc.raw, nil, upstreams),
+				h.onTCPRequest(tc.raw),
+			} {
+				if act.kind != actionReply {
+					t.Fatalf("action.kind = %v, want actionReply", act.kind)
+				}
+				var p dnsmessage.Parser
+				hdr, err := p.Start(act.payload)
+				if err != nil {
+					t.Fatalf("parsing synthesized reply: %v", err)
+				}
+				if hdr.ID != wantID {
+					t.Errorf("reply ID = %#x, want %#x", hdr.ID, wantID)
+				}
+				if !hdr.Response {
+					t.Error("reply QR = false, want true")
+				}
+				if hdr.RCode != tc.wantRCode {
+					t.Errorf("reply RCode = %v, want %v", hdr.RCode, tc.wantRCode)
+				}
+				if got := lim.inFlight.occupied(); got != 0 {
+					t.Errorf("inFlight slots = %d after synthesized reply, want 0", got)
+				}
 			}
 		})
 	}
 }
 
-func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
+func TestDNSHandlerUDPForwardAndResponseValidation(t *testing.T) {
 	lim := newLimiter()
 	pending := newPendingRequests(lim)
 	h := newDNSHandler(pending, lim, nil)
@@ -224,9 +234,9 @@ func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 		Class: dnsmessage.ClassINET,
 	}})
 
-	act := h.onRequest(bytes.Clone(query), clientAddr, []string{upstream1.String(), upstream2.String()})
+	act := h.onUDPRequest(bytes.Clone(query), clientAddr, []string{upstream1.String(), upstream2.String()})
 	if act.kind != actionForward {
-		t.Fatalf("onRequest kind = %v, want actionForward", act.kind)
+		t.Fatalf("onUDPRequest kind = %v, want actionForward", act.kind)
 	}
 	rewritten := act.payload
 	upstreamID := act.upstreamID
@@ -235,20 +245,20 @@ func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 	}
 
 	// 1. Response with QR == 0 is dropped.
-	if res := h.onResponse(rewritten, upstream1); res.kind != actionDrop {
+	if res := h.onUDPResponse(rewritten, upstream1); res.kind != actionDrop {
 		t.Errorf("QR=0 response kind = %v, want actionDrop", res.kind)
 	}
 
 	// 2. Response from unexpected upstream address is dropped without evicting pending request.
 	validResp := dnsAnswer(rewritten, 0)
-	if res := h.onResponse(validResp, wrongUpstream); res.kind != actionDrop {
+	if res := h.onUDPResponse(validResp, wrongUpstream); res.kind != actionDrop {
 		t.Errorf("wrong upstream source kind = %v, want actionDrop", res.kind)
 	}
 
 	// 3. Response with wrong transaction ID is dropped.
 	wrongIDResp := bytes.Clone(validResp)
 	binary.BigEndian.PutUint16(wrongIDResp[0:2], upstreamID^0xffff)
-	if res := h.onResponse(wrongIDResp, upstream1); res.kind != actionDrop {
+	if res := h.onUDPResponse(wrongIDResp, upstream1); res.kind != actionDrop {
 		t.Errorf("wrong ID response kind = %v, want actionDrop", res.kind)
 	}
 
@@ -261,7 +271,7 @@ func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 		Type:  dnsmessage.TypeA,
 		Class: dnsmessage.ClassINET,
 	}})
-	if res := h.onResponse(wrongQNameResp, upstream1); res.kind != actionDrop {
+	if res := h.onUDPResponse(wrongQNameResp, upstream1); res.kind != actionDrop {
 		t.Errorf("wrong QNAME response kind = %v, want actionDrop", res.kind)
 	}
 
@@ -274,13 +284,13 @@ func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 		Type:  dnsmessage.TypeAAAA,
 		Class: dnsmessage.ClassINET,
 	}})
-	if res := h.onResponse(wrongQTypeResp, upstream1); res.kind != actionDrop {
+	if res := h.onUDPResponse(wrongQTypeResp, upstream1); res.kind != actionDrop {
 		t.Errorf("wrong QTYPE response kind = %v, want actionDrop", res.kind)
 	}
 
 	// 6. SERVFAIL from upstream1 triggers ActionFailover to upstream2.
 	servFailResp := dnsAnswer(rewritten, byte(dnsmessage.RCodeServerFailure))
-	failoverAct := h.onResponse(servFailResp, upstream1)
+	failoverAct := h.onUDPResponse(servFailResp, upstream1)
 	if failoverAct.kind != actionFailover {
 		t.Fatalf("SERVFAIL on first upstream kind = %v, want actionFailover", failoverAct.kind)
 	}
@@ -301,17 +311,54 @@ func TestDNSHandlerForwardAndResponseValidation(t *testing.T) {
 		Type:  dnsmessage.TypeA,
 		Class: dnsmessage.ClassINET,
 	}})
-	deliverAct := h.onResponse(lowerResp, upstream2)
+	deliverAct := h.onUDPResponse(lowerResp, upstream2)
 	if deliverAct.kind != actionDeliver {
 		t.Fatalf("valid response on second upstream kind = %v, want actionDeliver", deliverAct.kind)
 	}
 	if gotID := binary.BigEndian.Uint16(deliverAct.payload[0:2]); gotID != 0xbeef {
 		t.Errorf("delivered ID = %#x, want 0xbeef", gotID)
 	}
-	if deliverAct.clientSource != clientAddr {
-		t.Errorf("delivered clientSource = %v, want %v", deliverAct.clientSource, clientAddr)
+	if deliverAct.clientAddr != clientAddr {
+		t.Errorf("delivered clientAddr = %v, want %v", deliverAct.clientAddr, clientAddr)
 	}
 	if got := lim.inFlight.occupied(); got != 0 {
 		t.Errorf("inFlight slots after delivery = %d, want 0", got)
+	}
+}
+
+func TestDNSHandlerTCPForwardAndResponseValidation(t *testing.T) {
+	lim := newLimiter()
+	pending := newPendingRequests(lim)
+	h := newDNSHandler(pending, lim, nil)
+
+	query := dnsQuery(0xbeef)
+	act := h.onTCPRequest(bytes.Clone(query))
+	if act.kind != actionForward {
+		t.Fatalf("onTCPRequest kind = %v, want actionForward", act.kind)
+	}
+	// TCP does not rewrite the transaction ID or record into pendingRequests.
+	if !bytes.Equal(act.payload, query) {
+		t.Errorf("onTCPRequest modified query payload")
+	}
+	if len(pending.entries) != 0 || lim.inFlight.occupied() != 0 {
+		t.Errorf("onTCPRequest touched pendingRequests (%d entries) or inFlight (%d slots)", len(pending.entries), lim.inFlight.occupied())
+	}
+
+	// Invalid responses are dropped.
+	if res := h.onTCPResponse([]byte{1, 2, 3}); res.kind != actionDrop {
+		t.Errorf("short TCP response kind = %v, want actionDrop", res.kind)
+	}
+	if res := h.onTCPResponse(query); res.kind != actionDrop {
+		t.Errorf("QR=0 TCP response kind = %v, want actionDrop", res.kind)
+	}
+
+	// Valid response is delivered unmodified.
+	resp := dnsAnswer(query, 0)
+	deliverAct := h.onTCPResponse(resp)
+	if deliverAct.kind != actionDeliver {
+		t.Fatalf("valid TCP response kind = %v, want actionDeliver", deliverAct.kind)
+	}
+	if !bytes.Equal(deliverAct.payload, resp) {
+		t.Errorf("delivered TCP response differs from input")
 	}
 }

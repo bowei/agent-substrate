@@ -97,31 +97,16 @@ func ErrorPacket(hdr dnsmessage.Header, rcode dnsmessage.RCode, q *dnsmessage.Qu
 		return out
 	}
 
-	// Last ditch reply: empty DNS response apart from headers that match the
-	// request.
-	//
-	//  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                    hdr.ID                     |  bytes 0..1
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// | 1|   OpCode  | 0| 0|RD| 1|  0  0  0|   RCode  |  bytes 2..3
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                  QDCOUNT = 0                  |  bytes 4..5
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                  ANCOUNT = 0                  |  bytes 6..7
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                  NSCOUNT = 0                  |  bytes 8..9
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-	// |                  ARCOUNT = 0                  |  bytes 10..11
-	// +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+	// Last ditch reply: somehow we got an error on generating the response.
+	// Synthesize an empty DNS response that matches the request.
 	const dnsHeaderLen = 12
-	var fallback [dnsHeaderLen]byte
-	binary.BigEndian.PutUint16(fallback[0:2], hdr.ID)
+	fallback := make([]byte, dnsHeaderLen)
+	SetTxnID(fallback, hdr.ID)
 	fallback[2] = 0x80 | (byte(hdr.OpCode)&0x0f)<<3
 	if hdr.RecursionDesired {
 		fallback[2] |= 0x01
 	}
 	fallback[3] = 0x80 | (byte(rcode) & 0x0f)
 
-	return fallback[:]
+	return fallback
 }

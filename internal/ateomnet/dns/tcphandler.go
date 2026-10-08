@@ -22,7 +22,6 @@ import (
 	"log/slog"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/agent-substrate/substrate/internal/ateomnet/dns/protocol"
@@ -39,7 +38,6 @@ const (
 type tcpClientConn struct {
 	conn    net.Conn
 	writeMu sync.Mutex
-	eof     atomic.Bool
 }
 
 // tcpHandler accepts actor TCP DNS connections and relays length-prefixed DNS
@@ -50,7 +48,6 @@ type tcpHandler struct {
 	listener net.Listener
 	dialer   net.Dialer
 	dns      *dnsHandler
-	pending  *pendingRequests
 	limiter  *limiter
 
 	tcpTimeout time.Duration
@@ -61,7 +58,6 @@ func newTCPHandler(
 	listener net.Listener,
 	dialer net.Dialer,
 	dns *dnsHandler,
-	pending *pendingRequests,
 	lim *limiter,
 ) *tcpHandler {
 	return &tcpHandler{
@@ -69,7 +65,6 @@ func newTCPHandler(
 		listener:   listener,
 		dialer:     dialer,
 		dns:        dns,
-		pending:    pending,
 		limiter:    lim,
 		tcpTimeout: defaultConnectionTimeout,
 	}
@@ -147,7 +142,6 @@ func (h *tcpHandler) onConnect(ctx context.Context, downstream net.Conn) {
 	h.refreshDeadline(ctx, downstream, upstream)
 
 	client := &tcpClientConn{conn: downstream}
-	defer h.pending.removeByClientSource(client)
 
 	// Forward request/responses.
 	var wg sync.WaitGroup
@@ -168,19 +162,12 @@ func (h *tcpHandler) processRequests(
 	client *tcpClientConn,
 	upstream net.Conn,
 ) {
-	upstreamSource := normalizeAddr(upstream.RemoteAddr())
-	upstreams := []string{upstreamSource}
-
 	for {
 		raw, err := protocol.ReadTCPFrame(client.conn)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				client.eof.Store(true)
 				if c, ok := upstream.(*net.TCPConn); ok {
 					_ = c.CloseWrite()
-				}
-				if h.pending.countByClientSource(client) == 0 {
-					_ = upstream.Close()
 				}
 				return
 			}
@@ -190,10 +177,11 @@ func (h *tcpHandler) processRequests(
 		}
 		h.refreshDeadline(ctx, client.conn, upstream)
 
-		act := h.dns.onRequest(raw, client, upstreams)
+		act := h.dns.onTCPRequest(raw)
 
 		switch act.kind {
 		case actionDrop:
+			// TODO: we should close the connect as this is an error.
 			continue
 		case actionReply:
 			if err := client.writeFrame(act.payload); err != nil {
@@ -224,7 +212,6 @@ func (h *tcpHandler) processResponses(
 	client *tcpClientConn,
 	upstream net.Conn,
 ) {
-	from := upstream.RemoteAddr()
 	for {
 		raw, err := protocol.ReadTCPFrame(upstream)
 		if err != nil {
@@ -238,16 +225,12 @@ func (h *tcpHandler) processResponses(
 		}
 		h.refreshDeadline(ctx, client.conn, upstream)
 
-		act := h.dns.onResponse(raw, from)
+		act := h.dns.onTCPResponse(raw)
 		switch act.kind {
 		case actionDrop:
 			continue
 		case actionDeliver:
-			target, ok := act.clientSource.(*tcpClientConn)
-			if !ok {
-				continue
-			}
-			if err := target.writeFrame(act.payload); err != nil {
+			if err := client.writeFrame(act.payload); err != nil {
 				if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
 					slog.WarnContext(ctx, "dns relay could not return TCP DNS answer", slog.Any("err", err))
 				}
@@ -256,10 +239,6 @@ func (h *tcpHandler) processResponses(
 				return
 			}
 			h.refreshDeadline(ctx, client.conn, upstream)
-			if client.eof.Load() && h.pending.countByClientSource(client) == 0 {
-				_ = upstream.Close()
-				return
-			}
 		}
 	}
 }

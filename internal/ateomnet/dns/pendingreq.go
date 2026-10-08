@@ -39,16 +39,13 @@ type pendingKey struct {
 	transportSource string
 }
 
-// pendingRequest holds the per-query state needed to validate responses,
+// pendingRequest holds the per-query state needed to validate UDP responses,
 // restore the actor's transaction ID, and fail over across upstreams.
-//
-// TODO(bowei): prune these fields down in a second pass and avoid setting a UDP
-// sweep expiry on TCP requests.
 type pendingRequest struct {
 	// clientRequestID is the actor's original DNS transaction ID.
 	clientRequestID uint16
-	// clientSource identifies the actor endpoint (net.Addr for UDP, *tcpClientConn for TCP).
-	clientSource any
+	// clientAddr identifies the actor UDP endpoint.
+	clientAddr net.Addr
 	// question is the canonicalized DNS question used to validate responses (RFC 5452).
 	question dnsmessage.Question
 	// rawQuery is a copy of the query with upstreamID written to bytes 0..1.
@@ -69,7 +66,7 @@ type pendingRequest struct {
 // pendingRequests maps (upstreamID, transportSource) to in-flight requests.
 //
 // TODO(bowei): move the response lookup and failover transition in
-// dnsHandler.onResponse into a method on pendingRequests so all lock and state
+// dnsHandler.onUDPResponse into a method on pendingRequests so all lock and state
 // transitions live in this file.
 type pendingRequests struct {
 	// mu guards entries and inUse.
@@ -122,7 +119,7 @@ func (p *pendingRequests) record(
 	raw []byte,
 	clientReqID uint16,
 	q dnsmessage.Question,
-	clientSource any,
+	clientAddr net.Addr,
 	upstreams []string,
 	hasSlot bool,
 ) (uint16, bool) {
@@ -149,7 +146,7 @@ func (p *pendingRequests) record(
 	p.inUse.Set(upstreamID)
 	p.entries[key] = &pendingRequest{
 		clientRequestID: clientReqID,
-		clientSource:    clientSource,
+		clientAddr:      clientAddr,
 		question:        q,
 		rawQuery:        bytes.Clone(raw),
 		upstreams:       upstreams,
@@ -210,32 +207,6 @@ func (p *pendingRequests) failOverOnSendError(
 	}
 	p.entries[nextKey] = entry
 	return entry.upstreamIdx, entry.rawQuery, true
-}
-
-// removeByClientSource removes all pending requests associated with clientSource.
-func (p *pendingRequests) removeByClientSource(clientSource any) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	for key, entry := range p.entries {
-		if entry.clientSource == clientSource {
-			p.deleteEntryLocked(key, entry)
-		}
-	}
-}
-
-// countByClientSource returns the number of pending requests for clientSource.
-func (p *pendingRequests) countByClientSource(clientSource any) int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	n := 0
-	for _, entry := range p.entries {
-		if entry.clientSource == clientSource {
-			n++
-		}
-	}
-	return n
 }
 
 // clearAll removes all pending entries and releases their in-flight slots.
@@ -300,15 +271,13 @@ func (p *pendingRequests) sweep(now time.Time) ([]reqFailover, []reqDelivery) {
 		// error response (e.g. SERVFAIL from an earlier upstream) with the
 		// actor's original transaction ID restored.
 		p.deleteEntryLocked(key, entry)
-		if entry.deferredResp != nil {
-			if addr, ok := entry.clientSource.(net.Addr); ok {
-				resp := bytes.Clone(entry.deferredResp)
-				protocol.SetTxnID(resp, entry.clientRequestID)
-				deliveries = append(deliveries, reqDelivery{
-					clientAddr: addr,
-					payload:    resp,
-				})
-			}
+		if entry.deferredResp != nil && entry.clientAddr != nil {
+			resp := bytes.Clone(entry.deferredResp)
+			protocol.SetTxnID(resp, entry.clientRequestID)
+			deliveries = append(deliveries, reqDelivery{
+				clientAddr: entry.clientAddr,
+				payload:    resp,
+			})
 		}
 	}
 	return failovers, deliveries

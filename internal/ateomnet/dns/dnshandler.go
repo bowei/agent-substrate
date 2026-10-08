@@ -42,13 +42,14 @@ const (
 	actionDeliver = "Deliver"
 )
 
-// action is the decision returned by onRequest and onResponse.
+// action is the decision returned by onUDPRequest, onUDPResponse,
+// onTCPRequest, and onTCPResponse.
 type action struct {
-	kind         actionKind
-	payload      []byte
-	upstreamID   uint16
-	clientSource any
-	upstreamIdx  int
+	kind        actionKind
+	payload     []byte
+	upstreamID  uint16
+	clientAddr  net.Addr
+	upstreamIdx int
 }
 
 // queryPolicy decides whether a parsed DNS question is permitted.
@@ -73,10 +74,65 @@ func newDNSHandler(pending *pendingRequests, lim *limiter, allow queryPolicy) *d
 	}
 }
 
-// onRequest inspects an incoming DNS query packet from the actor and returns
-// whether to drop it, reply immediately with a synthesized error, or record and
-// forward it to an upstream resolver.
-func (h *dnsHandler) onRequest(raw []byte, clientSource any, upstreams []string) action {
+// validateRequest checks packet structure and policy, returning actionDrop,
+// actionReply (with a synthesized error response), or actionForward along with
+// the parsed header and canonicalized question.
+func (h *dnsHandler) validateRequest(raw []byte) (dnsmessage.Header, dnsmessage.Question, action) {
+	if !protocol.RequestSanityCheck(raw) {
+		return dnsmessage.Header{}, dnsmessage.Question{}, action{kind: actionDrop}
+	}
+
+	var p dnsmessage.Parser
+	hdr, err := p.Start(raw)
+	if err != nil {
+		return hdr, dnsmessage.Question{}, errReplyAction(hdr, dnsmessage.RCodeFormatError, nil)
+	}
+
+	qdCount := protocol.QDCount(raw)
+
+	// OpCode must be QUERY (== 0).
+	if hdr.OpCode != 0 {
+		var qPtr *dnsmessage.Question
+		if qdCount == 1 {
+			if q, qErr := p.Question(); qErr == nil {
+				qPtr = &q
+			}
+		}
+		return hdr, dnsmessage.Question{}, errReplyAction(hdr, dnsmessage.RCodeNotImplemented, qPtr)
+	}
+
+	// Must have one query.
+	if qdCount != 1 {
+		return hdr, dnsmessage.Question{}, errReplyAction(hdr, dnsmessage.RCodeFormatError, nil)
+	}
+
+	// Question is valid.
+	q, err := p.Question()
+	if err != nil {
+		return hdr, dnsmessage.Question{}, errReplyAction(hdr, dnsmessage.RCodeFormatError, nil)
+	}
+
+	// Question type must be supported.
+	if q.Type == dnsmessage.TypeAXFR || q.Type == protocol.TypeIXFR {
+		return hdr, dnsmessage.Question{}, errReplyAction(hdr, dnsmessage.RCodeNotImplemented, &q)
+	}
+
+	// Check with query policy callout.
+	cq := canonicalizeQuestion(q)
+	if !h.allow(cq) {
+		return hdr, dnsmessage.Question{}, errReplyAction(hdr, dnsmessage.RCodeRefused, &q)
+	}
+
+	return hdr, cq, action{
+		kind:    actionForward,
+		payload: raw,
+	}
+}
+
+// onUDPRequest inspects an incoming UDP DNS query packet from the actor and
+// returns whether to drop it, reply immediately with a synthesized error, or
+// record and forward it to an upstream resolver.
+func (h *dnsHandler) onUDPRequest(raw []byte, clientAddr net.Addr, upstreams []string) action {
 	if !protocol.RequestSanityCheck(raw) {
 		return action{kind: actionDrop}
 	}
@@ -97,50 +153,14 @@ func (h *dnsHandler) onRequest(raw []byte, clientSource any, upstreams []string)
 		return action{kind: actionDrop}
 	}
 
-	var p dnsmessage.Parser
-	hdr, err := p.Start(raw)
-	if err != nil {
-		return errReplyAction(hdr, dnsmessage.RCodeFormatError, nil)
-	}
-
-	qdCount := protocol.QDCount(raw)
-
-	// OpCode must be QUERY (== 0).
-	if hdr.OpCode != 0 {
-		var qPtr *dnsmessage.Question
-		if qdCount == 1 {
-			if q, qErr := p.Question(); qErr == nil {
-				qPtr = &q
-			}
-		}
-		return errReplyAction(hdr, dnsmessage.RCodeNotImplemented, qPtr)
-	}
-
-	// Must have one query.
-	if qdCount != 1 {
-		return errReplyAction(hdr, dnsmessage.RCodeFormatError, nil)
-	}
-
-	// Question is valid.
-	q, err := p.Question()
-	if err != nil {
-		return errReplyAction(hdr, dnsmessage.RCodeFormatError, nil)
-	}
-
-	// Question type must be supported.
-	if q.Type == dnsmessage.TypeAXFR || q.Type == protocol.TypeIXFR {
-		return errReplyAction(hdr, dnsmessage.RCodeNotImplemented, &q)
-	}
-
-	// Check with query policy callout.
-	cq := canonicalizeQuestion(q)
-	if !h.allow(cq) {
-		return errReplyAction(hdr, dnsmessage.RCodeRefused, &q)
+	hdr, cq, act := h.validateRequest(raw)
+	if act.kind != actionForward {
+		return act
 	}
 
 	// Set to true before calling record, which takes ownership of hasSlot.
 	forwarded = true
-	upstreamID, ok := h.pending.record(raw, hdr.ID, cq, clientSource, upstreams, hasSlot)
+	upstreamID, ok := h.pending.record(raw, hdr.ID, cq, clientAddr, upstreams, hasSlot)
 	if !ok {
 		return action{kind: actionDrop}
 	}
@@ -152,10 +172,10 @@ func (h *dnsHandler) onRequest(raw []byte, clientSource any, upstreams []string)
 	}
 }
 
-// onResponse validates an incoming DNS response packet from an upstream
+// onUDPResponse validates an incoming UDP DNS response packet from an upstream
 // resolver against pendingRequests and returns whether to drop it, fail over to
 // the next upstream, or deliver it to the actor.
-func (h *dnsHandler) onResponse(raw []byte, from net.Addr) action {
+func (h *dnsHandler) onUDPResponse(raw []byte, from net.Addr) action {
 	if !protocol.ResponseSanityCheck(raw) {
 		return action{kind: actionDrop}
 	}
@@ -210,16 +230,43 @@ func (h *dnsHandler) onResponse(raw []byte, from net.Addr) action {
 
 	// Forward response to Actor.
 	clientID := entry.clientRequestID
-	clientSource := entry.clientSource
+	clientAddr := entry.clientAddr
 	h.pending.deleteEntryLocked(key, entry)
 
 	out := bytes.Clone(raw)
 	binary.BigEndian.PutUint16(out[0:2], clientID)
 
 	return action{
-		kind:         actionDeliver,
-		payload:      out,
-		clientSource: clientSource,
+		kind:       actionDeliver,
+		payload:    out,
+		clientAddr: clientAddr,
+	}
+}
+
+// onTCPRequest inspects an incoming TCP DNS query frame from the actor and
+// returns whether to drop it, reply immediately with a synthesized error, or
+// forward it unmodified on the connection's dedicated upstream stream.
+func (h *dnsHandler) onTCPRequest(raw []byte) action {
+	_, _, act := h.validateRequest(raw)
+	return act
+}
+
+// onTCPResponse validates an incoming TCP DNS response frame from the
+// connection's upstream stream and returns whether to drop or deliver it.
+func (h *dnsHandler) onTCPResponse(raw []byte) action {
+	if !protocol.ResponseSanityCheck(raw) {
+		return action{kind: actionDrop}
+	}
+	var p dnsmessage.Parser
+	if _, err := p.Start(raw); err != nil {
+		return action{kind: actionDrop}
+	}
+	if _, err := p.Question(); err != nil {
+		return action{kind: actionDrop}
+	}
+	return action{
+		kind:    actionDeliver,
+		payload: raw,
 	}
 }
 

@@ -127,7 +127,7 @@ func (h *udpHandler) readFromActor(ctx context.Context) error {
 			return fmt.Errorf("dns: reading actor DNS query: %w", err)
 		}
 		raw := bytes.Clone(buf[:n])
-		act := h.dns.onRequest(raw, from, h.upstreamStrs)
+		act := h.dns.onUDPRequest(raw, from, h.upstreamStrs)
 		switch act.kind {
 		case actionDrop:
 			continue
@@ -148,10 +148,11 @@ func (h *udpHandler) sendToUpstream(ctx context.Context, upstreamID uint16, idx 
 			return
 		}
 		if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+			slog.ErrorContext(ctx, "dns relay: upstream UDP socket closed, stopping forwarding")
 			h.pending.clearAll()
 			return
 		}
-		slog.WarnContext(ctx, "dns relay could not send query to upstream", slog.String("upstream", h.upstreamStrs[idx]), slog.Any("err", err))
+		slog.WarnContext(ctx, "dns relay: could not send query to upstream", slog.String("upstream", h.upstreamStrs[idx]), slog.Any("err", err))
 		nextIdx, nextQuery, ok := h.pending.failOverOnSendError(upstreamID, idx)
 		if !ok {
 			return
@@ -173,7 +174,7 @@ func (h *udpHandler) readFromUpstream(ctx context.Context) error {
 			continue
 		}
 		raw := bytes.Clone(buf[:n])
-		act := h.dns.onResponse(raw, from)
+		act := h.dns.onUDPResponse(raw, from)
 		switch act.kind {
 		case actionDrop:
 			continue
@@ -183,8 +184,8 @@ func (h *udpHandler) readFromUpstream(ctx context.Context) error {
 				h.sendToUpstream(ctx, upstreamID, act.upstreamIdx, act.payload)
 			}
 		case actionDeliver:
-			if clientAddr, ok := act.clientSource.(net.Addr); ok {
-				if _, err := h.actorSock.WriteTo(act.payload, clientAddr); err != nil && ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
+			if act.clientAddr != nil {
+				if _, err := h.actorSock.WriteTo(act.payload, act.clientAddr); err != nil && ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
 					slog.WarnContext(ctx, "dns relay could not return a DNS answer", slog.Any("err", err))
 				}
 			}

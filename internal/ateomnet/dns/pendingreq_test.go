@@ -35,7 +35,7 @@ var exampleQuestion = dnsmessage.Question{
 
 // recordQuery records dnsQuery(clientID) holding an in-flight slot, as a
 // forwarded query does, and returns its upstream ID and the rewritten query.
-func recordQuery(t *testing.T, p *pendingRequests, clientID uint16, client any, upstreams []string) (uint16, []byte) {
+func recordQuery(t *testing.T, p *pendingRequests, clientID uint16, client net.Addr, upstreams []string) (uint16, []byte) {
 	t.Helper()
 	p.limiter.inFlight.tryAcquire()
 	raw := dnsQuery(clientID)
@@ -149,7 +149,7 @@ func TestPendingRequestsRecord(t *testing.T) {
 	}
 	want := &pendingRequest{
 		clientRequestID: 0xbeef,
-		clientSource:    client,
+		clientAddr:      client,
 		question:        exampleQuestion,
 		rawQuery:        raw,
 		upstreams:       upstreams,
@@ -275,38 +275,6 @@ func TestPendingRequestsFailOverOnSendError(t *testing.T) {
 	}
 	if got := lim.inFlight.occupied(); got != 0 {
 		t.Errorf("%d in-flight slots held after the last upstream failed, want 0", got)
-	}
-}
-
-func TestPendingRequestsByClientSource(t *testing.T) {
-	lim := newLimiter()
-	p := newPendingRequests(lim)
-	upstreams := []string{"10.96.0.10:53"}
-	clientA := &net.UDPAddr{IP: net.ParseIP("169.254.0.2"), Port: 1111}
-	clientB := &net.UDPAddr{IP: net.ParseIP("169.254.0.2"), Port: 2222}
-	recordQuery(t, p, 0x1111, clientA, upstreams)
-	recordQuery(t, p, 0x2222, clientA, upstreams)
-	idB, _ := recordQuery(t, p, 0x3333, clientB, upstreams)
-
-	if got := p.countByClientSource(clientA); got != 2 {
-		t.Errorf("countByClientSource(clientA) = %d, want 2", got)
-	}
-	if got := p.countByClientSource(clientB); got != 1 {
-		t.Errorf("countByClientSource(clientB) = %d, want 1", got)
-	}
-
-	p.removeByClientSource(clientA)
-	if got := p.countByClientSource(clientA); got != 0 {
-		t.Errorf("countByClientSource(clientA) = %d after removing its requests, want 0", got)
-	}
-	if got := p.countByClientSource(clientB); got != 1 {
-		t.Errorf("countByClientSource(clientB) = %d after removing clientA's requests, want 1", got)
-	}
-	if !p.inUse.Get(idB) || p.inUse.Count() != 1 {
-		t.Errorf("%d IDs in use, want only clientB's %#x", p.inUse.Count(), idB)
-	}
-	if got := lim.inFlight.occupied(); got != 1 {
-		t.Errorf("%d in-flight slots held, want 1 for clientB's request", got)
 	}
 }
 
