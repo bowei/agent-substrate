@@ -26,8 +26,8 @@ import (
 	"net/netip"
 	"sync"
 
-	"github.com/agent-substrate/substrate/internal/ateomnet/dns"
 	"github.com/agent-substrate/substrate/internal/ateomnet/netns"
+	"github.com/agent-substrate/substrate/internal/atunnel/dns"
 	"github.com/agent-substrate/substrate/internal/nodepath"
 
 	"github.com/google/nftables"
