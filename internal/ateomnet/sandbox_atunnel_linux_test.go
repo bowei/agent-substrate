@@ -27,7 +27,7 @@ import (
 
 	"github.com/agent-substrate/substrate/internal/ateomnet"
 	"github.com/agent-substrate/substrate/internal/ateomnet/netns"
-	"github.com/agent-substrate/substrate/internal/atunnel/egress"
+	"github.com/agent-substrate/substrate/internal/linuxsys"
 	"github.com/agent-substrate/substrate/internal/roottest"
 )
 
@@ -59,7 +59,7 @@ func TestSandboxEgressReachesAtunnelOnAnyPort(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		dst, err := egress.TCPOriginalDestination(c)
+		dst, err := linuxsys.TCPOriginalDestination(c)
 		if err != nil {
 			t.Errorf("TCPOriginalDestination: %v", err)
 			return
@@ -164,7 +164,7 @@ func TestSandboxLinkLocalDoesNotReachAtunnel(t *testing.T) {
 		t.Fatalf("accept allowed connection: %v", err)
 	}
 	defer conn.Close()
-	destination, err := egress.TCPOriginalDestination(conn)
+	destination, err := linuxsys.TCPOriginalDestination(conn)
 	if err != nil {
 		t.Fatalf("TCPOriginalDestination: %v", err)
 	}
