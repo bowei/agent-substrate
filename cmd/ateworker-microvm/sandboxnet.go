@@ -21,7 +21,6 @@ import (
 	"os"
 
 	"github.com/agent-substrate/substrate/internal/ateomnet"
-	"github.com/agent-substrate/substrate/internal/ateomnet/dns"
 )
 
 // writeActorResolvConf points the guest resolver at its fixed gateway address.
@@ -30,5 +29,5 @@ func writeActorResolvConf(rootfs string) error {
 	if err != nil {
 		return fmt.Errorf("reading the worker pod resolv.conf: %w", err)
 	}
-	return dns.WriteRootfsResolvConf(rootfs, dns.SandboxResolvConf(ateomnet.ActorVethGateway, pod))
+	return ateomnet.WriteRootfsResolvConf(rootfs, ateomnet.SandboxResolvConf(ateomnet.ActorVethGateway, pod))
 }
