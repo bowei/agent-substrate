@@ -1,0 +1,20 @@
+{"Time":"2026-10-15T10:00:00Z","Action":"start","Package":"example.com/e2e/suites/demo"}
+{"Time":"2026-10-15T10:00:00.1Z","Action":"run","Package":"example.com/e2e/suites/demo","Test":"TestDemo"}
+{"Time":"2026-10-15T10:00:00.1Z","Action":"output","Package":"example.com/e2e/suites/demo","Test":"TestDemo","Output":"=== RUN   TestDemo\n"}
+{"Time":"2026-10-15T10:00:00.2Z","Action":"output","Package":"example.com/e2e/suites/demo","Test":"TestDemo","Output":"    fixture.go:150: E2E-MONITOR {\"kind\":\"atespace\",\"name\":\"ate-e2e-demo\"}\n"}
+{"Time":"2026-10-15T10:00:00.3Z","Action":"run","Package":"example.com/e2e/suites/demo","Test":"TestDemo/resume"}
+{"Time":"2026-10-15T10:00:00.3Z","Action":"output","Package":"example.com/e2e/suites/demo","Test":"TestDemo/resume","Output":"=== RUN   TestDemo/resume\n"}
+{"Time":"2026-10-15T10:00:00.4Z","Action":"output","Package":"example.com/e2e/suites/demo","Test":"TestDemo/resume","Output":"    resume.go:50: E2E-MONITOR {\"kind\":\"actor\",\"name\":\"counter-xyz\",\"atespace\":\"ate-e2e-demo\"}\n"}
+{"Time":"2026-10-15T10:00:01Z","Action":"output","Package":"example.com/e2e/suites/demo","Test":"TestDemo/resume","Output":"    demo_test.go:80: waiting for actor\n"}
+{"Time":"2026-10-15T10:00:02Z","Action":"output","Package":"example.com/e2e/suites/demo","Test":"TestDemo/resume","Output":"--- FAIL: TestDemo/resume (1.70s)\n"}
+{"Time":"2026-10-15T10:00:02Z","Action":"fail","Package":"example.com/e2e/suites/demo","Test":"TestDemo/resume","Elapsed":1.7}
+{"Time":"2026-10-15T10:00:02.1Z","Action":"run","Package":"example.com/e2e/suites/demo","Test":"TestDemo/skipped"}
+{"Time":"2026-10-15T10:00:02.1Z","Action":"skip","Package":"example.com/e2e/suites/demo","Test":"TestDemo/skipped","Elapsed":0}
+{"Time":"2026-10-15T10:00:02.2Z","Action":"fail","Package":"example.com/e2e/suites/demo","Test":"TestDemo","Elapsed":2.1}
+{"Time":"2026-10-15T10:00:02.3Z","Action":"run","Package":"example.com/e2e/suites/demo","Test":"TestHangs"}
+{"Time":"2026-10-15T10:00:03Z","Action":"output","Package":"example.com/e2e/suites/demo","Output":"panic: test timed out after 30m0s\n"}
+{"Time":"2026-10-15T10:00:03Z","Action":"fail","Package":"example.com/e2e/suites/demo","Elapsed":3}
+{"Time":"2026-10-15T10:00:00Z","Action":"start","Package":"example.com/e2e/suites/other"}
+{"Time":"2026-10-15T10:00:00.5Z","Action":"run","Package":"example.com/e2e/suites/other","Test":"TestOther"}
+{"Time":"2026-10-15T10:00:01Z","Action":"pass","Package":"example.com/e2e/suites/other","Test":"TestOther","Elapsed":0.5}
+{"Time":"2026-10-15T10:00:01Z","Action":"pass","Package":"example.com/e2e/suites/other","Elapsed":1}

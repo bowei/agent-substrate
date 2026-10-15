@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-substrate/substrate/internal/e2e/e2etrack"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -150,6 +151,9 @@ func DeploySubstrateFixture(t *testing.T, ctx context.Context, clients *Clients,
 		}
 	}
 
+	// The atespace also names the k8s namespace holding the fixture's pool.
+	Track(t, e2etrack.Ref{Kind: e2etrack.KindNamespace, Name: atespace})
+	Track(t, e2etrack.Ref{Kind: e2etrack.KindAtespace, Name: atespace})
 	if _, err := clients.SubstrateAPI.CreateAtespace(ctx, &ateapipb.CreateAtespaceRequest{Atespace: &ateapipb.Atespace{Metadata: &ateapipb.ResourceMetadata{Name: atespace}}}); err != nil && status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("failed to create atespace %q: %v", atespace, err)
 	}

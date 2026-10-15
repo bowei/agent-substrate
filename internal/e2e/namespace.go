@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-substrate/substrate/internal/e2e/e2etrack"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -87,13 +88,15 @@ func CreateNamespace(t *testing.T) *Namespace {
 	}
 
 	t.Logf("Creating namespace: %s", nsName)
+	Track(t, e2etrack.Ref{Kind: e2etrack.KindNamespace, Name: nsName})
 
 	clients := GetClients()
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   nsName,
-			Labels: map[string]string{NamespaceLabel: "true"},
+			Name:        nsName,
+			Labels:      map[string]string{NamespaceLabel: "true"},
+			Annotations: map[string]string{TestAnnotation: t.Name()},
 		},
 	}
 

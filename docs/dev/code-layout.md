@@ -36,6 +36,12 @@ these. The exception is [`internal/plugins/`](../../internal/plugins/README.md):
 self-contained plugins, each a Go module of its own, in a temporary location
 that nothing else in the repo should depend on or import.
 
+**`internal/x/`** holds experimental, unsupported developer tools that live in
+the main module because they reuse its `internal/` packages (for example
+[`internal/x/e2e-monitor`](../../internal/x/e2e-monitor/README.md)). Nothing
+outside `internal/x/` may import them, and they may change or disappear without
+notice.
+
 > **Use `pkg/` sparingly.** Once the project reaches GA, any exported type,
 > function, or field in `pkg/` becomes subject to a compatibility guarantee —
 > removing or renaming it is a breaking change for external consumers. Prefer

@@ -47,6 +47,7 @@ const resumeCapacityWait = 90 * time.Second
 // adding another copy here.
 func ResumeActorAwaitCapacity(t *testing.T, ctx context.Context, clients *Clients, req *ateapipb.ResumeActorRequest) (*ateapipb.ResumeActorResponse, error) {
 	t.Helper()
+	TrackActor(t, req.GetActor().GetAtespace(), req.GetActor().GetName())
 	deadline := time.Now().Add(resumeCapacityWait)
 	for {
 		resp, err := clients.SubstrateAPI.ResumeActor(ctx, req)
