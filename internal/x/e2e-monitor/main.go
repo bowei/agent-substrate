@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -39,8 +40,10 @@ import (
 	"github.com/agent-substrate/substrate/internal/x/e2e-monitor/internal/discovery"
 	"github.com/agent-substrate/substrate/internal/x/e2e-monitor/internal/e2efeed"
 	"github.com/agent-substrate/substrate/internal/x/e2e-monitor/internal/logs"
+	"github.com/agent-substrate/substrate/internal/x/e2e-monitor/internal/monitor"
 	"github.com/agent-substrate/substrate/internal/x/e2e-monitor/internal/server"
 	"github.com/agent-substrate/substrate/internal/x/e2e-monitor/internal/substrate"
+	"github.com/agent-substrate/substrate/internal/x/e2e-monitor/internal/tui"
 	"github.com/agent-substrate/substrate/pkg/client/clientset/versioned"
 )
 
@@ -59,6 +62,7 @@ type options struct {
 	bufferLines     int
 	exitWhenDone    bool
 	verbose         bool
+	tui             bool
 }
 
 func main() {
@@ -89,11 +93,12 @@ With no subcommand it behaves like "serve".`,
 	fs.StringVar(&o.namespace, "namespace", envOr(ateclient.NamespaceEnv, installdefaults.SystemNamespace), "Substrate's system namespace (env "+ateclient.NamespaceEnv+")")
 	fs.StringSliceVar(&o.extraNamespaces, "extra-namespace", []string{"podcertificate-controller-system"}, "More namespaces whose workloads are shown as components")
 	fs.StringVar(&o.resourcePrefix, "resource-prefix", os.Getenv("E2E_RESOURCE_PREFIX"), "Prefix the install puts on substrate's resource names (env E2E_RESOURCE_PREFIX)")
-	fs.StringVar(&o.followWorkers, "follow-workers", string(server.FollowE2E), `Which worker pods' logs to follow continuously: "e2e" (pods of running tests), "all", or "none" (only while viewed)`)
+	fs.StringVar(&o.followWorkers, "follow-workers", string(monitor.FollowE2E), `Which worker pods' logs to follow continuously: "e2e" (pods of running tests), "all", or "none" (only while viewed)`)
 	fs.BoolVar(&o.substrateAPI, "substrate-api", true, "Poll ateapi for workers and actors, and the router's /statusz")
 	fs.Int64Var(&o.tailLines, "tail-lines", 500, "Existing lines to load when starting to follow a container")
 	fs.IntVar(&o.bufferLines, "buffer-lines", 5000, "Lines kept in memory per container")
 	fs.BoolVarP(&o.verbose, "verbose", "v", false, "Debug logging")
+	fs.BoolVar(&o.tui, "tui", false, `Run the terminal UI instead of only serving the web UI (set --listen="" to serve no web UI)`)
 
 	serve := &cobra.Command{
 		Use:   "serve",
@@ -145,9 +150,22 @@ func run(ctx context.Context, o *options, command []string) error {
 	if o.verbose {
 		level = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	logOut := io.Writer(os.Stderr)
+	if o.tui {
+		// The TUI owns the terminal; log to a file instead.
+		f, err := os.CreateTemp("", "e2e-monitor-*.log")
+		if err != nil {
+			return err
+		}
+		defer func() {
+			f.Close()
+			fmt.Fprintf(os.Stderr, "e2e-monitor log: %s\n", f.Name())
+		}()
+		logOut = f
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: level})))
 
-	follow, err := server.ParseFollowMode(o.followWorkers)
+	follow, err := monitor.ParseFollowMode(o.followWorkers)
 	if err != nil {
 		return err
 	}
@@ -183,6 +201,9 @@ func run(ctx context.Context, o *options, command []string) error {
 		Namespaces:     append([]string{o.namespace}, o.extraNamespaces...),
 		ResourcePrefix: o.resourcePrefix,
 	})
+	if o.tui {
+		fmt.Fprintf(os.Stderr, "Discovering components in %s (context %s)…\n", o.namespace, contextName(o))
+	}
 	slog.Info("discovering components", "context", contextName(o), "namespace", o.namespace)
 	if err := disc.Start(ctx, time.Minute); err != nil {
 		return fmt.Errorf("watching the cluster: %w", err)
@@ -200,42 +221,63 @@ func run(ctx context.Context, o *options, command []string) error {
 		go poller.Run(ctx)
 	}
 
-	srv := server.New(ctx, server.Config{
+	mon := monitor.New(ctx, monitor.Config{
 		Discovery:     disc,
 		Logs:          logMgr,
 		Feed:          feed,
 		Substrate:     poller,
 		FollowWorkers: follow,
-		Info:          server.Info{Context: contextName(o), SystemNamespace: o.namespace},
+		Info:          monitor.Info{Context: contextName(o), SystemNamespace: o.namespace},
 	})
-	go srv.RunFollower(ctx)
+	go mon.RunFollower(ctx)
 
-	lis, err := net.Listen("tcp", o.listen)
-	if err != nil {
-		return err
-	}
-	httpSrv := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(shutdownCtx)
-	}()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- httpSrv.Serve(lis) }()
-	slog.Info("dashboard ready", "url", "http://"+lis.Addr().String())
-
-	switch {
-	case len(command) > 0:
-		err := e2efeed.RunCommand(ctx, feed, command, os.Stdout, os.Stderr)
-		s := feed.Summary()
-		slog.Info("e2e command finished", "err", err, "pass", s.Counts.Pass, "fail", s.Counts.Fail, "skip", s.Counts.Skip)
-		if o.exitWhenDone || ctx.Err() != nil {
-			stop()
-			<-serveErr
+	if o.listen != "" {
+		lis, err := net.Listen("tcp", o.listen)
+		if err != nil {
 			return err
 		}
-		slog.Info("dashboard still serving; interrupt to exit", "url", "http://"+lis.Addr().String())
+		httpSrv := &http.Server{Handler: server.New(mon).Handler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = httpSrv.Shutdown(shutdownCtx)
+		}()
+		go func() {
+			err := httpSrv.Serve(lis)
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			serveErr <- err
+		}()
+		slog.Info("web UI ready", "url", "http://"+lis.Addr().String())
+	} else {
+		go func() {
+			<-ctx.Done()
+			serveErr <- nil
+		}()
+	}
+
+	cmdDone := make(chan error, 1)
+	switch {
+	case len(command) > 0:
+		echo, errOut := io.Writer(os.Stdout), io.Writer(os.Stderr)
+		if o.tui {
+			// The E2E tab shows the output; stderr goes into the feed.
+			echo, errOut = io.Discard, feed.Writer()
+		}
+		go func() {
+			err := e2efeed.RunCommand(ctx, feed, command, echo, errOut)
+			s := feed.Summary()
+			slog.Info("e2e command finished", "err", err, "pass", s.Counts.Pass, "fail", s.Counts.Fail, "skip", s.Counts.Skip)
+			cmdDone <- err
+			if o.exitWhenDone {
+				stop()
+			} else if !o.tui && ctx.Err() == nil {
+				slog.Info("web UI still serving; interrupt to exit")
+			}
+		}()
 	case o.e2eJSON != "":
 		go func() {
 			if err := e2efeed.FollowFile(ctx, feed, o.e2eJSON, !o.replay); err != nil {
@@ -244,10 +286,27 @@ func run(ctx context.Context, o *options, command []string) error {
 		}()
 	}
 
-	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	if o.tui {
+		err := tui.Run(ctx, mon)
+		stop()
+		return errors.Join(err, <-serveErr, commandErr(cmdDone, command))
 	}
-	return nil
+	err = <-serveErr
+	return errors.Join(err, commandErr(cmdDone, command))
+}
+
+// commandErr returns the e2e command's error once it has exited, so a failed
+// run exits non-zero.
+func commandErr(done <-chan error, command []string) error {
+	if len(command) == 0 {
+		return nil
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(35 * time.Second):
+		return errors.New("e2e command did not exit")
+	}
 }
 
 func contextName(o *options) string {

@@ -17,6 +17,7 @@ package e2efeed
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -221,5 +222,16 @@ func TestMatcher(t *testing.T) {
 	}
 	if !NewMatcher(nil).Empty() {
 		t.Errorf("empty matcher not Empty")
+	}
+}
+
+func TestWriter(t *testing.T) {
+	f := New()
+	w := f.Writer()
+	fmt.Fprint(w, "first line\nsecond ")
+	fmt.Fprint(w, "line\npartial")
+	p, ok := f.Package("")
+	if !ok || len(p.Output) != 2 || p.Output[1].Text != "second line" {
+		t.Errorf("unattributed output = %+v", p.Output)
 	}
 }

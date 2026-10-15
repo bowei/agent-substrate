@@ -19,6 +19,7 @@ package e2efeed
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -458,4 +459,29 @@ func (f *Feed) AllRefs() map[string][]e2etrack.Ref {
 		}
 	}
 	return out
+}
+
+// Writer returns an io.Writer whose lines become package-less output, for a
+// command's stderr when nothing else displays it.
+func (f *Feed) Writer() io.Writer { return &lineWriter{f: f} }
+
+type lineWriter struct {
+	mu  sync.Mutex
+	f   *Feed
+	buf []byte
+}
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		w.f.ingestLine(strings.TrimRight(string(w.buf[:i]), "\r"), nil)
+		w.buf = w.buf[i+1:]
+	}
+	return len(p), nil
 }
